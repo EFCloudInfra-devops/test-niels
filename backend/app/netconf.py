@@ -1,16 +1,16 @@
 
 from ncclient import manager
 from lxml import etree
-from typing import Dict, Any, List
-from .config import settings
+from typing import Dict, Any, List, Tuple
+from .config import settings, Device
 
 
-def connect() -> manager.Manager:
+def connect(dev: Device) -> manager.Manager:
     return manager.connect(
-        host=settings.mgmt_ip,
+        host=dev.mgmt_ip,
         port=830,
         username=settings.netconf_username,
-        key_filename=settings.netconf_key_path,
+        password=settings.netconf_password,
         hostkey_verify=False,
         allow_agent=False,
         look_for_keys=False,
@@ -18,10 +18,9 @@ def connect() -> manager.Manager:
     )
 
 
-def get_configuration() -> etree._Element:
-    with connect() as m:
-        # get-config voor interfaces + chassis poe + vlans + virtual-chassis
-        filter_cfg = etree.XML('''
+def get_configuration(dev: Device) -> etree._Element:
+    with connect(dev) as m:
+        filter_cfg = etree.XML("""
         <filter>
           <configuration>
             <interfaces/>
@@ -32,7 +31,7 @@ def get_configuration() -> etree._Element:
             <virtual-chassis/>
           </configuration>
         </filter>
-        ''')
+        """)
         reply = m.get_config(source='running', filter=filter_cfg)
         return reply.data_ele
 
@@ -43,11 +42,11 @@ def parse_interfaces_config(cfg_ele: etree._Element) -> List[Dict[str, Any]]:
         name = ifl.findtext('name')
         if not name:
             continue
-        # naam als ge-0/0/10 of xe-1/2/1
         try:
             scheme, rest = name.split('-', 1)
             member, fpc, port = rest.split('/')
             member_i = int(member)
+            fpc_i = int(fpc)
             port_i = int(port)
         except Exception:
             continue
@@ -95,6 +94,7 @@ def parse_interfaces_config(cfg_ele: etree._Element) -> List[Dict[str, Any]]:
         interfaces.append({
             'name': name,
             'member': member_i,
+            'fpc': fpc_i,
             'type': scheme,
             'port': port_i,
             'mode': mode,
@@ -110,9 +110,8 @@ def parse_interfaces_config(cfg_ele: etree._Element) -> List[Dict[str, Any]]:
     return interfaces
 
 
-def get_operational() -> Dict[str, Dict[str, Any]]:
-    # Interface oper status + PoE info
-    with connect() as m:
+def get_operational(dev: Device) -> Dict[str, Dict[str, Any]]:
+    with connect(dev) as m:
         rpc = etree.XML('<get-interface-information><terse/></get-interface-information>')
         res = m.dispatch(rpc)
         oper = {}
@@ -138,6 +137,22 @@ def get_operational() -> Dict[str, Dict[str, Any]]:
         except Exception:
             pass
         return oper
+
+
+def get_vc_roles(dev: Device):
+    roles = []
+    mode = None
+    with connect(dev) as m:
+        try:
+            rpc = etree.XML('<get-virtual-chassis-information/>')
+            res = m.dispatch(rpc)
+            mode = res.data_ele.findtext('.//virtual-chassis-mode')
+            for mem in res.data_ele.xpath('//member-info'):
+                role = mem.findtext('member-role') or 'linecard'
+                roles.append(role)
+        except Exception:
+            roles = ['unknown','unknown']
+    return roles, mode
 
 
 def build_edit_config(if_name: str, cfg: Dict[str, Any]) -> etree._Element:
@@ -177,17 +192,27 @@ def build_edit_config(if_name: str, cfg: Dict[str, Any]) -> etree._Element:
     return root
 
 
-def commit_bulk(device_changes: List[Dict[str, Any]]) -> Dict[str, Any]:
-    with connect() as m:
+def show_compare(m) -> str:
+    try:
+        cmd = etree.XML('<command>show | compare</command>')
+        res = m.dispatch(cmd)
+        return ''.join(res.xpath('//output/text()')) or (res.xml if hasattr(res, 'xml') else '')
+    except Exception as e:
+        return f'compare failed: {e}'
+
+
+def commit_bulk(dev: Device, device_changes: List[Dict[str, Any]]):
+    with connect(dev) as m:
         m.lock()
         try:
             pre = m.get_config(source='running').data_xml
             for item in device_changes:
                 edit = build_edit_config(item['interface'], item['config'])
                 m.edit_config(target='candidate', config=etree.tostring(edit).decode())
+            diff = show_compare(m)
             m.commit()
             post = m.get_config(source='running').data_xml
-            return {'ok': True, 'pre': pre, 'post': post}
+            return {'ok': True, 'pre': pre, 'post': post, 'diff': diff}
         except Exception as e:
             try:
                 m.discard_changes()
@@ -199,3 +224,19 @@ def commit_bulk(device_changes: List[Dict[str, Any]]) -> Dict[str, Any]:
                 m.unlock()
             except Exception:
                 pass
+
+
+def rollback(dev: Device, level: int = 1):
+    with connect(dev) as m:
+        try:
+            rpc = etree.XML(f'<load-configuration><rollback>{level}</rollback></load-configuration>')
+            m.dispatch(rpc)
+            diff = show_compare(m)
+            m.commit()
+            return {'ok': True, 'diff': diff}
+        except Exception as e:
+            try:
+                m.discard_changes()
+            except Exception:
+                pass
+            return {'ok': False, 'error': str(e)}

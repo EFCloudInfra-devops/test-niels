@@ -1,6 +1,6 @@
 
 const API = 'http://localhost:8000/api';
-const DEVICE = 'BRB2-ACCESS-SW01';
+let DEVICE = null;
 
 const panesEl = document.getElementById('panes');
 const modal = document.getElementById('modal');
@@ -9,21 +9,38 @@ const form = document.getElementById('configForm');
 const modalTitle = document.getElementById('modalTitle');
 const bulkMode = document.getElementById('bulkMode');
 const driftBadge = document.getElementById('driftIndicator');
+const deviceSelect = document.getElementById('deviceSelect');
+const pollInput = document.getElementById('pollInput');
+const vcRolesEl = document.getElementById('vcRoles');
 
-let ports = []; // list of {name, member, type, port, oper_up, poe, ...}
+let ports = [];
 let selectedPorts = [];
 let currentPort = null;
+let pollTimer = null;
 
-async function fetchInterfaces() {
-  const res = await fetch(`${API}/switches/${DEVICE}/interfaces`);
-  ports = await res.json();
-  render();
+async function initInventory() {
+  const res = await fetch(`${API}/inventory`);
+  const inv = await res.json();
+  deviceSelect.innerHTML = inv.map(d=>`<option value="${d.name}">${d.name}</option>`).join('');
+  DEVICE = inv[0]?.name || null;
+  deviceSelect.value = DEVICE;
+  await refreshMeta();
+  await fetchInterfaces();
+  setupPolling();
+}
+
+async function refreshMeta() {
+  if (!DEVICE) return;
+  const res = await fetch(`${API}/devices/${DEVICE}`);
+  const d = await res.json();
+  const roles = d.roles || [];
+  vcRolesEl.textContent = `VC Roles: ${roles.map((r,i)=>`lid ${i}: ${r}`).join(' | ')}`;
 }
 
 function groupByMember(items) {
   const by = {0: [], 1: []};
   for (const it of items) {
-    if (by[it.member]) by[it.member].push(it);
+    if (it.member in by) by[it.member].push(it);
   }
   return by;
 }
@@ -39,16 +56,14 @@ function render() {
     const grid = document.createElement('div');
     grid.className = 'grid';
 
-    // RJ-45: 48 ge ports
     for (let p=0; p<48; p++) {
       const name = `ge-${member}/0/${p}`;
-      const info = ports.find(x => x.name === name) || {name, member, type:'ge', port:p, oper_up:false};
+      const info = ports.find(x => x.name === name) || {name, member, fpc:0, type:'ge', port:p, oper_up:false};
       grid.appendChild(renderPort(info));
     }
-    // SFP+: 4 xe ports
     for (let p=0; p<4; p++) {
       const name = `xe-${member}/2/${p}`;
-      const info = ports.find(x => x.name === name) || {name, member, type:'xe', port:p, oper_up:false};
+      const info = ports.find(x => x.name === name) || {name, member, fpc:2, type:'xe', port:p, oper_up:false};
       grid.appendChild(renderPort(info));
     }
     pane.appendChild(grid);
@@ -142,7 +157,6 @@ async function validate(cfg) {
 }
 
 function collectConfig(info) {
-  const isXe = info.type === 'xe';
   const mode = form.mode.value;
   const access_vlan = form.access_vlan.value ? parseInt(form.access_vlan.value,10) : undefined;
   const trunk_vlans = form.trunk_vlans.value ? form.trunk_vlans.value.split(',').map(x=>parseInt(x.trim(),10)).filter(Boolean) : undefined;
@@ -151,13 +165,37 @@ function collectConfig(info) {
   const poe = poeVal === '' ? undefined : (poeVal === 'true');
   const speed = form.speed.value || undefined;
   const duplex = form.duplex.value || undefined;
-  return { name: info.name, member: info.member, type: info.type, port: info.port, mode, access_vlan, trunk_vlans, native_vlan, poe, speed, duplex };
+  return { name: info.name, member: info.member, fpc: info.fpc, type: info.type, port: info.port, mode, access_vlan, trunk_vlans, native_vlan, poe, speed, duplex };
 }
 
-document.getElementById('syncBtn').addEventListener('click', async ()=>{
-  await fetch(`${API}/sync`, { method:'POST' });
+deviceSelect.addEventListener('change', async () => {
+  DEVICE = deviceSelect.value;
+  await refreshMeta();
   await fetchInterfaces();
 });
 
-setInterval(fetchInterfaces, 15000);
-fetchInterfaces();
+function setupPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  const interval = Math.max(5, parseInt(pollInput.value,10) || 15) * 1000;
+  pollTimer = setInterval(async () => {
+    await fetchInterfaces();
+  }, interval);
+}
+
+pollInput.addEventListener('change', setupPolling);
+
+async function fetchInterfaces() {
+  if (!DEVICE) return;
+  const res = await fetch(`${API}/switches/${DEVICE}/interfaces`);
+  ports = await res.json();
+  render();
+}
+
+document.getElementById('syncBtn').addEventListener('click', async ()=>{
+  if (!DEVICE) return;
+  await fetch(`${API}/sync/${DEVICE}`, { method:'POST' });
+  await refreshMeta();
+  await fetchInterfaces();
+});
+
+initInventory();

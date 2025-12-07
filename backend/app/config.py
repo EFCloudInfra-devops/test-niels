@@ -1,12 +1,20 @@
 
 from pydantic import BaseModel
-import os
+import os, json
+
+class Device(BaseModel):
+    name: str
+    mgmt_ip: str
+    group: str | None = None
 
 class Settings(BaseModel):
-    device_name: str = os.getenv('DEVICE_NAME', 'BRB2-ACCESS-SW01')
-    mgmt_ip: str = os.getenv('MGMT_IP', '10.22.0.11')
-    netconf_username: str = os.getenv('NETCONF_USERNAME', 'netconf_automation')
-    netconf_key_path: str = os.getenv('NETCONF_KEY_PATH', '/app/keys/id_rsa')
-    sync_interval_seconds: int = int(os.getenv('SYNC_INTERVAL_SECONDS', '180'))
+    devices: list[Device]
+    netconf_username: str = os.getenv('NETCONF_USERNAME', 'automation')
+    netconf_password: str = os.getenv('NETCONF_PASSWORD', '')
+    sync_interval_seconds: int = int(os.getenv('SYNC_INTERVAL_SECONDS', '120'))
 
-settings = Settings()
+inv_path = '/app/inventory.json'
+with open(inv_path, 'r') as f:
+    data = json.load(f)
+
+settings = Settings(devices=[Device(**d) for d in data])

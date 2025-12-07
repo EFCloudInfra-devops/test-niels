@@ -1,4 +1,3 @@
-
 services:
   backend:
     build: ./backend
@@ -9,11 +8,11 @@ services:
       - backend/.env
     volumes:
       - ./backend/data:/app/data
-      - ./secrets:/app/keys:ro
+      - ./backend/inventory.json:/app/inventory.json:ro
   frontend:
     build: ./frontend
     container_name: ex4300-frontend
     ports:
-      - "8080:80"
+      - "8081:80"
     depends_on:
       - backend

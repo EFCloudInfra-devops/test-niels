@@ -1,8 +1,8 @@
-
 :root { --up: #2ecc71; --down: #e74c3c; --poe: #f1c40f; --xe: #3498db; --ge: #34495e; }
 body { font-family: system-ui, sans-serif; margin: 0; background: #121212; color: #eee; }
 header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #1f1f1f; border-bottom: 1px solid #333; }
 .toolbar { display: flex; gap: 12px; align-items: center; }
+.roles { padding: 8px 16px; font-size: 14px; color: #bbb; }
 .badge { background: #e67e22; padding: 4px 8px; border-radius: 4px; }
 .hidden { display: none; }
 main { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 24px; }

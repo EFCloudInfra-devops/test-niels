@@ -1,21 +1,25 @@
-
 <!doctype html>
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>EX4300 Port UI — BRB2-ACCESS-SW01</title>
+  <title>EX4300 Port UI</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header>
-    <h1>BRB2-ACCESS-SW01 (VC)</h1>
+    <h1>EX4300 Port UI</h1>
     <div class="toolbar">
+      <label>Device:
+        <select id="deviceSelect"></select>
+      </label>
       <button id="syncBtn">Sync actual</button>
       <label><input type="checkbox" id="bulkMode"> Bulkselectie</label>
+      <label>Polling (s): <input type="number" id="pollInput" min="5" value="15" /></label>
       <span id="driftIndicator" class="badge hidden">Drift gedetecteerd</span>
     </div>
   </header>
+  <div id="vcRoles" class="roles"></div>
   <main id="panes"></main>
 
   <div id="modal" class="modal hidden">

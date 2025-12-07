@@ -14,10 +14,10 @@ class AuditLog(Base):
     id = Column(Integer, primary_key=True)
     user = Column(String(128))
     device = Column(String(128))
-    interfaces = Column(Text)  # CSV of interfaces
-    action = Column(Text)      # JSON string of requested changes
+    interfaces = Column(Text)
+    action = Column(Text)
     result = Column(String(64))
-    diff = Column(Text)        # simple textual diff/snapshot
+    diff = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class DesiredState(Base):
@@ -25,7 +25,7 @@ class DesiredState(Base):
     id = Column(Integer, primary_key=True)
     device = Column(String(128))
     interface = Column(String(128))
-    payload = Column(Text)    # JSON of desired config (last committed via this app)
+    payload = Column(Text)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 class ActualCache(Base):
@@ -33,8 +33,17 @@ class ActualCache(Base):
     id = Column(Integer, primary_key=True)
     device = Column(String(128))
     interface = Column(String(128))
-    payload = Column(Text)    # JSON of parsed actual config
+    payload = Column(Text)
     refreshed_at = Column(DateTime, default=datetime.utcnow)
+
+class RollbackSnap(Base):
+    __tablename__ = 'rollback_snaps'
+    id = Column(Integer, primary_key=True)
+    device = Column(String(128))
+    pre = Column(Text)
+    post = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 
 def init_db():
     Base.metadata.create_all(engine)
