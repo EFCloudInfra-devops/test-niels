@@ -9,7 +9,7 @@ from . import netconf
 from apscheduler.schedulers.background import BackgroundScheduler
 import json
 
-app = FastAPI(title='EX4300 Port UI Backend', version='0.2.0')
+app = FastAPI(title='EX4300 Port UI Backend', version='0.2.1')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -31,10 +31,13 @@ def device_by_name(name: str) -> Device:
 
 
 def refresh_actual_cache(dev: Device):
-    cfg_ele = netconf.get_configuration(dev)
-    parsed = netconf.parse_interfaces_config(cfg_ele)
-    oper = netconf.get_operational(dev)
-    roles, mode = netconf.get_vc_roles(dev)
+    try:
+        cfg_ele = netconf.get_configuration(dev)
+        parsed = netconf.parse_interfaces_config(cfg_ele)
+        oper = netconf.get_operational(dev)
+        roles, mode = netconf.get_vc_roles(dev)
+    except Exception:
+        return  # skip device on errors
     db = SessionLocal()
     try:
         for p in parsed:
@@ -65,6 +68,11 @@ for dev in settings.devices:
     scheduler.add_job(lambda d=dev: refresh_actual_cache(d), 'interval', seconds=settings.sync_interval_seconds, id=f'actual_sync_{dev.name}', replace_existing=True)
 
 scheduler.start()
+
+
+@app.get('/api/health')
+def health():
+    return {'ok': True}
 
 
 @app.get('/api/inventory')

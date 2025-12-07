@@ -14,25 +14,24 @@ def connect(dev: Device) -> manager.Manager:
         hostkey_verify=False,
         allow_agent=False,
         look_for_keys=False,
-        timeout=30
+        timeout=30,
+        device_params={'name':'junos'}
     )
 
 
 def get_configuration(dev: Device) -> etree._Element:
     with connect(dev) as m:
-        filter_cfg = etree.XML("""
-        <filter>
-          <configuration>
-            <interfaces/>
-            <vlans/>
-            <chassis>
-              <poe/>
-            </chassis>
-            <virtual-chassis/>
-          </configuration>
-        </filter>
-        """)
-        reply = m.get_config(source='running', filter=filter_cfg)
+        criteria = etree.XML('''
+        <configuration>
+          <interfaces/>
+          <vlans/>
+          <chassis>
+            <poe/>
+          </chassis>
+          <virtual-chassis/>
+        </configuration>
+        ''')
+        reply = m.get_config(source='running', filter=('subtree', criteria))
         return reply.data_ele
 
 
