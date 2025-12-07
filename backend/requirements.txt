@@ -1,0 +1,9 @@
+
+fastapi==0.115.2
+uvicorn[standard]==0.30.0
+ncclient==0.6.15
+lxml==5.2.1
+pydantic==2.8.2
+SQLAlchemy==2.0.32
+apscheduler==3.10.4
+python-dotenv==1.0.1
