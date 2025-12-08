@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings, Device
@@ -7,9 +6,9 @@ from .models import init_db, SessionLocal, AuditLog, DesiredState, ActualCache, 
 from .utils import validate_config
 from . import netconf
 from apscheduler.schedulers.background import BackgroundScheduler
-import json
+import json, re
 
-app = FastAPI(title='EX4300 Port UI Backend', version='0.2.1')
+app = FastAPI(title='EX4300 Port UI Backend', version='0.2.4')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -22,13 +21,14 @@ init_db()
 
 scheduler = BackgroundScheduler()
 
-
 def device_by_name(name: str) -> Device:
     for d in settings.devices:
         if d.name == name:
             return d
     raise KeyError('device not found')
 
+GE_PAT = re.compile(r'^ge-\d+/0/\d+$')
+XE_PAT = re.compile(r'^xe-\d+/2/\d+$')
 
 def refresh_actual_cache(dev: Device):
     try:
@@ -37,20 +37,35 @@ def refresh_actual_cache(dev: Device):
         oper = netconf.get_operational(dev)
         roles, mode = netconf.get_vc_roles(dev)
     except Exception:
-        return  # skip device on errors
+        return
+    by_name = {p['name']: p for p in parsed}
+    for iname, o in oper.items():
+        if iname not in by_name and (GE_PAT.match(iname) or XE_PAT.match(iname)):
+            try:
+                scheme, rest = iname.split('-', 1)
+                member, fpc, port = rest.split('/')
+                by_name[iname] = {
+                    'name': iname, 'member': int(member), 'fpc': int(fpc), 'type': scheme,
+                    'port': int(port), 'mode': 'access', 'access_vlan': None, 'trunk_vlans': None,
+                    'native_vlan': None, 'poe': o.get('poe'), 'speed': None, 'duplex': None,
+                    'admin_up': o.get('admin_up', False), 'oper_up': o.get('oper_up', False)
+                }
+            except Exception:
+                pass
+        elif iname in by_name:
+            by_name[iname].update(o)
+    merged = list(by_name.values())
+
     db = SessionLocal()
     try:
-        for p in parsed:
-            name = p['name']
-            if name in oper:
-                p.update(oper[name])
-            rec = db.query(ActualCache).filter_by(device=dev.name, interface=name).first()
+        for p in merged:
+            rec = db.query(ActualCache).filter_by(device=dev.name, interface=p['name']).first()
             payload = json.dumps(p)
             if rec:
                 rec.payload = payload
                 db.add(rec)
             else:
-                db.add(ActualCache(device=dev.name, interface=name, payload=payload))
+                db.add(ActualCache(device=dev.name, interface=p['name'], payload=payload))
         db.commit()
         meta = {'name': dev.name, 'mgmt_ip': dev.mgmt_ip, 'roles': roles, 'vc_mode': mode}
         rec = db.query(ActualCache).filter_by(device=dev.name, interface='__meta__').first()
@@ -69,16 +84,13 @@ for dev in settings.devices:
 
 scheduler.start()
 
-
 @app.get('/api/health')
 def health():
     return {'ok': True}
 
-
 @app.get('/api/inventory')
 def inventory():
     return [d.model_dump() for d in settings.devices]
-
 
 @app.get('/api/devices/{device}', response_model=DeviceInfo)
 def get_device(device: str):
@@ -98,7 +110,6 @@ def get_device(device: str):
     finally:
         db.close()
 
-
 @app.get('/api/switches/{device}/interfaces')
 def list_interfaces(device: str):
     try:
@@ -115,12 +126,39 @@ def list_interfaces(device: str):
     finally:
         db.close()
 
+@app.get('/api/switches/{device}/interface/{ifname}')
+def get_interface_cached(device: str, ifname: str):
+    try:
+        dev = device_by_name(device)
+    except KeyError:
+        raise HTTPException(404, 'Onbekend device')
+    db = SessionLocal()
+    try:
+        rec = db.query(ActualCache).filter_by(device=device, interface=ifname).first()
+        if rec:
+            return json.loads(rec.payload)
+        refresh_actual_cache(dev)
+        rec = db.query(ActualCache).filter_by(device=device, interface=ifname).first()
+        return json.loads(rec.payload) if rec else {'name': ifname}
+    finally:
+        db.close()
+
+@app.get('/api/switches/{device}/interface/{ifname}/live')
+def get_interface_live(device: str, ifname: str):
+    try:
+        dev = device_by_name(device)
+    except KeyError:
+        raise HTTPException(404, 'Onbekend device')
+    try:
+        info = netconf.get_interface_live(dev, ifname)
+        return info
+    except Exception as e:
+        raise HTTPException(500, f'live read failed: {e}')
 
 @app.post('/api/validate', response_model=ValidateResponse)
 def validate(config: InterfaceConfig):
     errors = validate_config(config)
     return ValidateResponse(ok=(len(errors)==0), errors=errors)
-
 
 @app.post('/api/commit')
 def commit(req: CommitRequest):
@@ -154,7 +192,6 @@ def commit(req: CommitRequest):
         return result
     finally:
         db.close()
-
 
 @app.post('/api/commit/bulk')
 def commit_bulk(req: BulkCommitRequest):
@@ -200,7 +237,6 @@ def commit_bulk(req: BulkCommitRequest):
     finally:
         db.close()
 
-
 @app.post('/api/sync/{device}')
 def sync_now(device: str):
     try:
@@ -209,7 +245,6 @@ def sync_now(device: str):
         raise HTTPException(404, 'Onbekend device')
     refresh_actual_cache(dev)
     return {'ok': True}
-
 
 @app.post('/api/rollback')
 def do_rollback(req: RollbackRequest):
@@ -229,3 +264,5 @@ def do_rollback(req: RollbackRequest):
         return res
     finally:
         db.close()
+
+

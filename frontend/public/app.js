@@ -1,6 +1,9 @@
 
 const API = 'http://localhost:8000/api';
 let DEVICE = null;
+const gridGe0 = document.getElementById('grid-ge0');
+const gridGe1 = document.getElementById('grid-ge1');
+const gridXe  = document.getElementById('grid-xe');
 const panesEl = document.getElementById('panes');
 const modal = document.getElementById('modal');
 const closeModal = document.getElementById('closeModal');
@@ -35,6 +38,9 @@ async function refreshMeta() {
 function groupByMember(items) { const by = {0: [], 1: []}; for (const it of items) { if (it.member in by) by[it.member].push(it); } return by; }
 
 function render() {
+  gridGe0.innerHTML = '';
+  gridGe1.innerHTML = '';
+  gridXe.innerHTML  = '';
   panesEl.innerHTML = '';
   const byMember = groupByMember(ports);
   for (const member of [0,1]) {
@@ -43,6 +49,26 @@ function render() {
     for (let p=0; p<48; p++) { const name = `ge-${member}/0/${p}`; const info = ports.find(x => x.name === name) || {name, member, fpc:0, type:'ge', port:p, oper_up:false}; grid.appendChild(renderPort(info)); }
     for (let p=0; p<4; p++) { const name = `xe-${member}/2/${p}`; const info = ports.find(x => x.name === name) || {name, member, fpc:2, type:'xe', port:p, oper_up:false}; grid.appendChild(renderPort(info)); }
     pane.appendChild(grid); panesEl.appendChild(pane);
+    
+    // RJ-45 per lid
+    for (let p=0; p<48; p++) {
+      const n0 = `ge-0/0/${p}`;
+      const n1 = `ge-1/0/${p}`;
+      const i0 = ports.find(x=>x.name===n0) || {name:n0, member:0, fpc:0, type:'ge', port:p, oper_up:false};
+      const i1 = ports.find(x=>x.name===n1) || {name:n1, member:1, fpc:0, type:'ge', port:p, oper_up:false};
+      gridGe0.appendChild(makePort(i0));
+      gridGe1.appendChild(makePort(i1));
+    }
+
+    // SFP+ per lid (twee vakjes naast elkaar per p)
+    for (let p=0; p<4; p++) {
+      const n0 = `xe-0/2/${p}`;
+      const n1 = `xe-1/2/${p}`;
+      const i0 = ports.find(x=>x.name===n0) || {name:n0, member:0, fpc:2, type:'xe', port:p, oper_up:false};
+      const i1 = ports.find(x=>x.name===n1) || {name:n1, member:1, fpc:2, type:'xe', port:p, oper_up:false};
+      gridXe.appendChild(makePort(i0));
+      gridXe.appendChild(makePort(i1));
+    }
   }
 }
 
@@ -53,17 +79,29 @@ function renderPort(info) {
   return el;
 }
 
-function openModal(info) {
-  modalTitle.textContent = `Config ${info.name}`;
-  form.mode.value = info.mode || 'access';
-  form.access_vlan.value = info.access_vlan || '';
-  form.trunk_vlans.value = (info.trunk_vlans || []).join(',');
-  form.native_vlan.value = info.native_vlan || '';
-  form.poe.value = (info.poe === undefined ? '' : info.poe ? 'true' : 'false');
-  form.speed.value = info.speed || '';
-  form.duplex.value = info.duplex || '';
-  adjustVisibility(); modal.classList.remove('hidden');
+async function openModal(info) { 
+  // haal live config + oper van backend 
+  const live = await (await fetch(`${API}/switches/${DEVICE}/interface/${encodeURIComponent(info.name)}/live`)).json(); 
+  const merged = {...info, ...live};
+  modalTitle.textContent = `Config ${merged.name}`;
+  form.mode.value = merged.mode || 'access';
+  form.access_vlan.value = merged.access_vlan || '';
+  form.trunk_vlans.value = (merged.trunk_vlans || []).join(',');
+  form.native_vlan.value = merged.native_vlan || '';
+  form.poe.value = (merged.poe === undefined ? '' : merged.poe ? 'true' : 'false');
+  form.speed.value = merged.speed || '';
+  form.duplex.value = merged.duplex || '';
+  adjustVisibility();
+  modal.classList.remove('hidden');
 }
+
+modal.addEventListener('click', (e) => {
+  if (e.target === modal) closeModal();
+});
+window.addEventListener('keydown', (e)=>{
+  if (e.key === 'Escape' && !modal.classList.contains('hidden')) closeModal();
+});
+function closeModal() { modal.classList.add('hidden'); }
 
 closeModal.addEventListener('click', () => modal.classList.add('hidden'));
 form.mode.addEventListener('change', adjustVisibility);

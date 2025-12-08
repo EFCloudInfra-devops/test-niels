@@ -1,1 +1,29 @@
 :root { --up: #2ecc71; --down: #e74c3c; --poe: #f1c40f; --xe: #3498db; --ge: #34495e; }
+body { font-family: system-ui, sans-serif; margin: 0; background: #121212; color: #eee; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #1f1f1f; border-bottom: 1px solid #333; }
+.toolbar { display: flex; gap: 12px; align-items: center; }
+.roles { padding: 8px 16px; font-size: 14px; color: #bbb; }
+.badge { background: #e67e22; padding: 4px 8px; border-radius: 4px; }
+.hidden { display: none; }
+main { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 24px; }
+.pane { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+.pane h2 { margin-top: 0; }
+.grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 8px; }
+.port { position: relative; height: 36px; border-radius: 4px; display: flex; justify-content: center; align-items: center; cursor: pointer; font-size: 12px; }
+.port.ge { background: #2c3e50; }
+.port.xe { background: #1b3d5e; }
+.port.up { outline: 2px solid var(--up); }
+.port.down { outline: 2px solid var(--down); }
+.port .dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: #888; }
+.port .dot.poe { background: var(--poe); }
+.label { color: #ddd; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
+.modal.hidden { display: none; }
+.modal-content { background: #202020; padding: 16px; border-radius: 8px; width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+.close { position: absolute; right: 12px; top: 8px; cursor: pointer; font-size: 22px; }
+.form-row { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 8px; margin-bottom: 10px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
+button { background: #3b82f6; color: #fff; border: none; border-radius: 4px; padding: 8px 10px; cursor: pointer; }
+button:hover { background: #2563eb; }
+input, select { background: #151515; color: #eee; border: 1px solid #333; border-radius: 4px; padding: 6px; }
+.bulk-selected { box-shadow: 0 0 0 2px #f39c12 inset; }

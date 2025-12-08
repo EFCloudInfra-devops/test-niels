@@ -239,3 +239,38 @@ def rollback(dev: Device, level: int = 1):
             except Exception:
                 pass
             return {'ok': False, 'error': str(e)}
+
+def get_interface_live(dev: Device, if_name: str) -> Dict[str, Any]:
+    with connect(dev) as m:
+        # Config-subtree alleen voor deze interface
+        criteria = etree.XML(f'''
+        <configuration>
+          <interfaces>
+            <interface>
+              <name>{if_name}</name>
+              <unit/>
+              <ether-options/>
+            </interface>
+          </interfaces>
+          <chassis><poe/></chassis>
+        </configuration>
+        ''')
+        cfg = m.get_config(source='running', filter=('subtree', criteria))
+        cfg_ele = cfg.data_ele
+        parsed = parse_interfaces_config(cfg_ele)
+        info = parsed[0] if parsed else {'name': if_name}
+
+        # Oper-status voor alleen deze interface
+        rpc = etree.XML(f'''
+          <get-interface-information>
+            <interface-name>{if_name}</interface-name>
+            <terse/>
+          </get-interface-information>
+        ''')
+        res = m.dispatch(rpc)
+        phy = res.data_ele.find('.//physical-interface')
+        if phy is not None:
+            admin = phy.findtext('admin-status')
+            oper_s = phy.findtext('oper-status')
+            info.update({'admin_up': admin == 'up', 'oper_up': oper_s == 'up'})
+        return info
