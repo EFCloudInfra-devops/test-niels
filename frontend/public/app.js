@@ -169,7 +169,6 @@ async function updateModalLive(ifName) {
     const accessSelect = document.getElementById('accessVlanSelect');
     const trunkSelect = document.getElementById('trunkVlanSelect');
     const nativeSelect = document.getElementById('nativeVlanSelect');
-    const speedInput = document.getElementById('speedInput');
     const bundleHint = document.getElementById('bundleHint');
 
     modalTitle.textContent = `Port ${live.name}`;
@@ -187,7 +186,6 @@ async function updateModalLive(ifName) {
     setTrunkInline(trunkNames);
 
     nativeSelect.value = live.native_vlan || '';
-    speedInput.value = live.speed || '';
 
     if (live.bundle) {
       const siblings = ports.filter(p => p.bundle === live.bundle && p.name !== live.name).map(p => p.name);
@@ -244,7 +242,6 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     access_vlan,
     trunk_vlans: mode === 'trunk' ? trunk_vlans : undefined,
     native_vlan,
-    speed: currentPort.speed || undefined,
   };
 
   const payload = { device: DEVICE, user: 'niels', interfaces: [currentPort.name], config: cfg };
