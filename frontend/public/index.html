@@ -14,44 +14,52 @@
         <select id="deviceSelect"></select>
       </label>
       <button id="syncBtn">Sync actual</button>
-      <label><input type="checkbox" id="bulkMode"> Bulkselectie</label>
-      <label>Polling (s): <input type="number" id="pollInput" min="5" value="15" /></label>
-      <span id="driftIndicator" class="badge hidden">Drift gedetecteerd</span>
+      <span id="lastRefresh" class="inline-badge" title="Last cache refresh">—</span>
+      <label>Polling (s): <input type="number" id="pollInput" min="15" value="60" /></label>
     </div>
   </header>
-  <div id="vcRoles" class="roles"></div>
   
   <main id="pane" class="pane">
-    <h2>VC (ge-0/* boven, ge-1/* eronder)</h2>
-    <div class="grid" id="grid-ge0"></div>
-    <div class="grid" id="grid-ge1"></div>
-    <div class="grid uplinks" id="grid-xe"></div>
+    <div class="grid" id="grid-ge0"></div><br>
+    <div class="grid" id="grid-ge1"></div><br>
+    <div class="grid uplinks" id="grid-xe"></div><br>
+    <div class="grid aggregates" id="grid-ae"></div>
   </main>
 
   <div id="modal" class="modal hidden">
     <div class="modal-content">
       <span id="closeModal" class="close">×</span>
-      <h2 id="modalTitle">Poortconfiguratie</h2>
+      <h2 id="modalTitle">Port configuration</h2>
+      <div id="adminBadge" class="badge hidden">ADMIN DOWN</div>
       <form id="configForm">
         <div class="form-row">
           <label>Mode</label>
-          <select name="mode">
+          <select name="mode" id="modeSelect">
             <option value="access">access</option>
             <option value="trunk">trunk</option>
           </select>
         </div>
+        <!-- Access VLAN: from backend /vlans -->
         <div class="form-row access-only">
           <label>Access VLAN</label>
-          <input type="number" name="access_vlan" min="1" max="4094" />
+          <select name="access_vlan" id="accessVlanSelect"></select>
         </div>
+        <!-- Trunk VLANs: multiselect -->
         <div class="form-row trunk-only">
-          <label>Trunk VLANs (CSV)</label>
-          <input type="text" name="trunk_vlans" placeholder="10,20,30" />
+          <label>Trunk VLANs</label>
+          <select name="trunk_vlans" id="trunkVlanSelect" multiple size="8"></select>
         </div>
+        <!-- Show selected trunk VLANs inline -->
+        <div class="form-row trunk-only">
+          <label>Selected</label>
+          <div id="trunkSelected" class="multi-inline"></div>
+        </div>
+        <!-- Native VLAN -->
         <div class="form-row trunk-only">
           <label>Native VLAN</label>
-          <input type="number" name="native_vlan" min="1" max="4094" />
+          <select name="native_vlan" id="nativeVlanSelect"></select>
         </div>
+      
         <div class="form-row">
           <label>PoE</label>
           <select name="poe">
@@ -60,27 +68,19 @@
             <option value="false">uit</option>
           </select>
         </div>
+        <!-- Speed (read-only) -->
         <div class="form-row">
-          <label>Snelheid</label>
-          <select name="speed">
-            <option value="">auto</option>
-            <option value="10m">10m</option>
-            <option value="100m">100m</option>
-            <option value="1g">1g</option>
-            <option value="10g">10g</option>
-          </select>
+          <label>Speed</label>
+          <input type="text" name="speed" id="speedInput" readonly />
         </div>
-        <div class="form-row">
-          <label>Duplex</label>
-          <select name="duplex">
-            <option value="">auto</option>
-            <option value="full">full</option>
-          </select>
-        </div>
+
         <div class="actions">
-          <button type="submit">Opslaan</button>
+          <button type="submit">Save</button>
         </div>
       </form>
+      <!-- AE bundle hint -->
+      <div id="bundleHint" class="hidden inline-badge"></div>
+      
     </div>
   </div>
 

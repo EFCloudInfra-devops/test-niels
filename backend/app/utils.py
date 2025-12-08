@@ -1,38 +1,25 @@
-from typing import List
+
+from typing import List, Union
 from .schemas import InterfaceConfig
 
-GE_SPEEDS = {'auto','10m','100m','1g'}
-XE_SPEEDS = {'10g'}
+def _is_vlan_ok(v: Union[int, str, None]) -> bool:
+    if v is None: return False
+    if isinstance(v, int): return 1 <= v <= 4094
+    if isinstance(v, str): return len(v.strip()) > 0
+    return False
 
 def validate_config(config: InterfaceConfig) -> List[str]:
     errors = []
     if config.mode == 'access':
-        if config.access_vlan is None:
-            errors.append('Access mode vereist access_vlan.')
-        elif not (1 <= config.access_vlan <= 4094):
-            errors.append('access_vlan buiten bereik (1–4094).')
+        if not _is_vlan_ok(config.access_vlan):
+            errors.append('Access mode requires a valid access_vlan (ID 1–4094 or name).')
     elif config.mode == 'trunk':
         if not config.trunk_vlans:
-            errors.append('Trunk mode vereist trunk_vlans lijst.')
+            errors.append('Trunk mode requires trunk_vlans list.')
         else:
-            for vid in config.trunk_vlans:
-                if not (1 <= vid <= 4094):
-                    errors.append(f'trunk VLAN {vid} buiten bereik.')
-        if config.native_vlan is not None and not (1 <= config.native_vlan <= 4094):
-            errors.append('native_vlan buiten bereik (1–4094).')
-    if config.type == 'xe' and config.fpc == 2:
-        if config.mode != 'trunk':
-            errors.append('Uplink policy: xe-*/2/* moet trunk zijn.')
-        if config.speed and config.speed != '10g':
-            errors.append('Uplink policy: xe-*/2/* snelheid verplicht 10g.')
-    if config.type == 'xe' and config.poe:
-        errors.append('PoE is niet toegestaan op SFP+ (xe).')
-    if config.type == 'ge':
-        if config.speed and config.speed not in GE_SPEEDS:
-            errors.append('Ongeldige snelheid voor ge-poort.')
-    if config.type == 'xe':
-        if config.speed and config.speed not in XE_SPEEDS:
-            errors.append('Ongeldige snelheid voor xe-poort (alleen 10g).')
-    if config.duplex and config.duplex not in {'auto','full'}:
-        errors.append('Ongeldige duplex waarde.')
+            for v in config.trunk_vlans:
+                if not _is_vlan_ok(v):
+                    errors.append(f'Invalid trunk VLAN: {v}')
+        if config.native_vlan is not None and not _is_vlan_ok(config.native_vlan):
+            errors.append('Invalid native_vlan (ID 1–4094 or name).')
     return errors
