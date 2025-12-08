@@ -1,4 +1,3 @@
-
 from typing import List
 from .schemas import InterfaceConfig
 

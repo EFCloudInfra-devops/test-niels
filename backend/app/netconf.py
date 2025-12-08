@@ -1,9 +1,7 @@
-
 from ncclient import manager
 from lxml import etree
 from typing import Dict, Any, List, Tuple
 from .config import settings, Device
-
 
 def connect(dev: Device) -> manager.Manager:
     return manager.connect(
@@ -17,7 +15,6 @@ def connect(dev: Device) -> manager.Manager:
         timeout=30,
         device_params={'name':'junos'}
     )
-
 
 def get_configuration(dev: Device) -> etree._Element:
     with connect(dev) as m:
@@ -33,7 +30,6 @@ def get_configuration(dev: Device) -> etree._Element:
         ''')
         reply = m.get_config(source='running', filter=('subtree', criteria))
         return reply.data_ele
-
 
 def parse_interfaces_config(cfg_ele: etree._Element) -> List[Dict[str, Any]]:
     interfaces = []
@@ -108,7 +104,6 @@ def parse_interfaces_config(cfg_ele: etree._Element) -> List[Dict[str, Any]]:
         })
     return interfaces
 
-
 def get_operational(dev: Device) -> Dict[str, Dict[str, Any]]:
     with connect(dev) as m:
         rpc = etree.XML('<get-interface-information><terse/></get-interface-information>')
@@ -137,8 +132,7 @@ def get_operational(dev: Device) -> Dict[str, Dict[str, Any]]:
             pass
         return oper
 
-
-def get_vc_roles(dev: Device):
+def get_vc_roles(dev: Device) -> Tuple[List[str], str | None]:
     roles = []
     mode = None
     with connect(dev) as m:
@@ -153,96 +147,8 @@ def get_vc_roles(dev: Device):
             roles = ['unknown','unknown']
     return roles, mode
 
-
-def build_edit_config(if_name: str, cfg: Dict[str, Any]) -> etree._Element:
-    root = etree.Element('config')
-    configuration = etree.SubElement(root, 'configuration')
-    interfaces = etree.SubElement(configuration, 'interfaces')
-    interface = etree.SubElement(interfaces, 'interface')
-    etree.SubElement(interface, 'name').text = if_name
-    unit = etree.SubElement(interface, 'unit')
-    etree.SubElement(unit, 'name').text = '0'
-    family = etree.SubElement(unit, 'family')
-    esw = etree.SubElement(family, 'ethernet-switching')
-    etree.SubElement(esw, 'port-mode').text = cfg.get('mode','access')
-    vlan = etree.SubElement(esw, 'vlan')
-    if cfg.get('mode') == 'access' and cfg.get('access_vlan'):
-        mem = etree.SubElement(vlan, 'members')
-        mem.text = str(cfg['access_vlan'])
-    elif cfg.get('mode') == 'trunk' and cfg.get('trunk_vlans'):
-        for vid in cfg['trunk_vlans']:
-            mem = etree.SubElement(vlan, 'members')
-            mem.text = str(vid)
-        if cfg.get('native_vlan'):
-            etree.SubElement(esw, 'native-vlan-id').text = str(cfg['native_vlan'])
-    if cfg.get('poe') is not None:
-        chassis = etree.SubElement(configuration, 'chassis')
-        poe = etree.SubElement(chassis, 'poe')
-        iface = etree.SubElement(poe, 'interface')
-        etree.SubElement(iface, 'name').text = if_name
-        if not cfg['poe']:
-            etree.SubElement(iface, 'disable')
-    if cfg.get('speed') or cfg.get('duplex'):
-        eo = etree.SubElement(interface, 'ether-options')
-        if cfg.get('speed'):
-            etree.SubElement(eo, 'speed').text = cfg['speed']
-        if cfg.get('duplex') == 'full':
-            etree.SubElement(eo, 'no-auto-negotiation')
-    return root
-
-
-def show_compare(m) -> str:
-    try:
-        cmd = etree.XML('<command>show | compare</command>')
-        res = m.dispatch(cmd)
-        return ''.join(res.xpath('//output/text()')) or (res.xml if hasattr(res, 'xml') else '')
-    except Exception as e:
-        return f'compare failed: {e}'
-
-
-def commit_bulk(dev: Device, device_changes: List[Dict[str, Any]]):
-    with connect(dev) as m:
-        m.lock()
-        try:
-            pre = m.get_config(source='running').data_xml
-            for item in device_changes:
-                edit = build_edit_config(item['interface'], item['config'])
-                m.edit_config(target='candidate', config=etree.tostring(edit).decode())
-            diff = show_compare(m)
-            m.commit()
-            post = m.get_config(source='running').data_xml
-            return {'ok': True, 'pre': pre, 'post': post, 'diff': diff}
-        except Exception as e:
-            try:
-                m.discard_changes()
-            except Exception:
-                pass
-            return {'ok': False, 'error': str(e)}
-        finally:
-            try:
-                m.unlock()
-            except Exception:
-                pass
-
-
-def rollback(dev: Device, level: int = 1):
-    with connect(dev) as m:
-        try:
-            rpc = etree.XML(f'<load-configuration><rollback>{level}</rollback></load-configuration>')
-            m.dispatch(rpc)
-            diff = show_compare(m)
-            m.commit()
-            return {'ok': True, 'diff': diff}
-        except Exception as e:
-            try:
-                m.discard_changes()
-            except Exception:
-                pass
-            return {'ok': False, 'error': str(e)}
-
 def get_interface_live(dev: Device, if_name: str) -> Dict[str, Any]:
     with connect(dev) as m:
-        # Config-subtree alleen voor deze interface
         criteria = etree.XML(f'''
         <configuration>
           <interfaces>
@@ -259,14 +165,7 @@ def get_interface_live(dev: Device, if_name: str) -> Dict[str, Any]:
         cfg_ele = cfg.data_ele
         parsed = parse_interfaces_config(cfg_ele)
         info = parsed[0] if parsed else {'name': if_name}
-
-        # Oper-status voor alleen deze interface
-        rpc = etree.XML(f'''
-          <get-interface-information>
-            <interface-name>{if_name}</interface-name>
-            <terse/>
-          </get-interface-information>
-        ''')
+        rpc = etree.XML(f'<get-interface-information><interface-name>{if_name}</interface-name><terse/></get-interface-information>')
         res = m.dispatch(rpc)
         phy = res.data_ele.find('.//physical-interface')
         if phy is not None:

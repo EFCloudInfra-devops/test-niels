@@ -1,4 +1,3 @@
-
 from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime
@@ -43,7 +42,6 @@ class RollbackSnap(Base):
     pre = Column(Text)
     post = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
-
 
 def init_db():
     Base.metadata.create_all(engine)
