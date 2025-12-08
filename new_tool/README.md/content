@@ -1,0 +1,25 @@
+# Juniper EX4300 Switch UI (NETCONF)
+
+A minimal Docker Compose-based solution to visualize a Juniper EX4300-48P (Virtual Chassis), configure ports (VLAN access/trunk, PoE, speed/duplex), poll status, and audit/rollback via NETCONF.
+
+**Scope (initial):** BRB2-ACCESS-SW01 (VC with 2 members), mgmt IP 10.22.0.11, JUNOS 21.4R3-S11.3.
+
+## Quick Start
+1. Place private key at `./secrets/id_rsa` and configure its public key on the switch.
+2. Adjust `backend/.env` if needed.
+3. Run:
+   ```bash
+   docker compose up -d --build
+   ```
+   Frontend: http://localhost:8080 — Backend: http://localhost:8000/docs
+
+## Features
+- Port-grid per VC member (48x RJ-45 ge-*/0/*, 4x SFP+ xe-*/2/*)
+- Modals: VLAN (access/trunk + native), PoE (RJ-45 only), speed/duplex
+- Validation: VLAN 1–4094; PoE blocked on SFP+
+- NETCONF candidate/commit (+ diff via compare rollback 0)
+- Audit (SQLite) + rollback endpoint
+
+## Known Constraints
+- PoE is **never** allowed on SFP+ (xe-*/2/*).
+- Junos NETCONF over SSH **port 830** recommended. (Sources: Juniper docs) 

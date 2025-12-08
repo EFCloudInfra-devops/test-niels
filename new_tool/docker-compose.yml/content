@@ -1,0 +1,22 @@
+version: "3.9"
+services:
+  backend:
+    build: ./backend
+    container_name: juniper-ui-backend
+    env_file:
+      - backend/.env
+    volumes:
+      - ./backend/app/data:/app/data
+      - ./secrets/id_rsa:/app/secrets/id_rsa:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: juniper-ui-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

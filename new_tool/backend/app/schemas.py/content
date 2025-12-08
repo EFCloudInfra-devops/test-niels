@@ -1,0 +1,36 @@
+from pydantic import BaseModel, Field
+from typing import Literal, Optional, List
+
+class InterfaceMode(BaseModel):
+    mode: Literal['access', 'trunk']
+    access_vlan: Optional[int] = None
+    trunk_vlans: Optional[List[int]] = None
+    native_vlan_id: Optional[int] = None
+
+class PoeConfig(BaseModel):
+    enable: bool
+
+class SpeedDuplex(BaseModel):
+    speed: str | None = Field(default=None, description='auto, 10m, 100m, 1g, 2.5g, 10g')
+    auto_negotiation: bool | None = True
+    link_mode: Optional[Literal['full-duplex', 'half-duplex']] = 'full-duplex'
+
+class InterfaceDesired(BaseModel):
+    interface: str
+    mode: InterfaceMode | None = None
+    poe: PoeConfig | None = None
+    speed_duplex: SpeedDuplex | None = None
+
+class ConfigureRequest(BaseModel):
+    user: str = 'unknown'
+    changes: InterfaceDesired
+
+class DeviceInterfaces(BaseModel):
+    device: str
+    desired: dict
+    actual: dict
+    drift: dict
+
+class RollbackResponse(BaseModel):
+    device: str
+    status: str

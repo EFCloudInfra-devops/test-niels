@@ -1,0 +1,38 @@
+import re
+RJ45_RE = re.compile(r'^ge-\d+/0/\d+$')
+SFP_RE  = re.compile(r'^xe-\d+/2/\d+$')
+AE_RE   = re.compile(r'^ae\d+$')
+
+def is_rj45(name: str) -> bool: return bool(RJ45_RE.match(name))
+def is_sfp(name: str)  -> bool: return bool(SFP_RE.match(name))
+def is_lacp(name: str) -> bool: return bool(AE_RE.match(name))
+
+def validate_payload(intf: str, payload: dict) -> list[str]:
+    errs = []
+    mode = payload.get('mode'); poe = payload.get('poe'); sd = payload.get('speed_duplex')
+    if mode:
+        if mode.get('mode') not in ['access','trunk']: errs.append('mode must be access or trunk')
+        if mode.get('mode')=='access':
+            vid = mode.get('access_vlan')
+            if not isinstance(vid,int) or not (1<=vid<=4094): errs.append('access VLAN must be 1..4094')
+        if mode.get('mode')=='trunk':
+            vlans = mode.get('trunk_vlans') or []
+            if not vlans: errs.append('trunk_vlans must be non-empty')
+            for v in vlans:
+                if not (1<=int(v)<=4094): errs.append(f'invalid trunk VLAN {v}')
+            native = mode.get('native_vlan_id')
+            if native is not None and not (1<=int(native)<=4094): errs.append('native VLAN must be 1..4094')
+    if poe and is_sfp(intf): errs.append('PoE is not allowed on SFP+ (xe-*)')
+    if sd:
+        speed = sd.get('speed')
+        if speed and speed not in ['auto','10m','100m','1g','2.5g','10g']: errs.append('unsupported speed value')
+        link_mode = sd.get('link_mode')
+        if link_mode and link_mode not in ['full-duplex','half-duplex']: errs.append('link_mode must be full-duplex or half-duplex')
+    return errs
+
+def generate_interfaces(vc_members: int = 2) -> list[str]:
+    names = []
+    for member in range(vc_members):
+        names += [f'ge-{member}/0/{i}' for i in range(48)]
+        names += [f'xe-{member}/2/{i}' for i in range(4)]
+    return names

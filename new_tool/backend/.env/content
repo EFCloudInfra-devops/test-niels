@@ -1,0 +1,6 @@
+NETCONF_USERNAME=automation
+NETCONF_PASSWORD=pVoor7BmwBotzyKL
+NETCONF_PORT=830
+SYNC_INTERVAL_SECONDS=300
+NETCONF_KEY_PATH=/app/secrets/id_rsa
+INVENTORY_JSON={"devices":[{"name":"BRB2-ACCESS-SW01","mgmt_ip":"10.22.0.11","junos":"21.4R3-S11.3","vc_members":2},{"name":"GRN1-ACCESS-SW01","mgmt_ip":"10.22.0.21","junos":"21.4R3-S11.3","vc_members":2},{"name":"GRN1-ACCESS-SW02","mgmt_ip":"10.22.0.22","junos":"21.4R3-S11.3","vc_members":2}]}

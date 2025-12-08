@@ -1,0 +1,60 @@
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+DB_PATH = Path('/app/data/app.db')
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS desired_state (
+  device TEXT NOT NULL,
+  interface TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (device, interface)
+);
+CREATE TABLE IF NOT EXISTS audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts DATETIME DEFAULT CURRENT_TIMESTAMP,
+  user TEXT,
+  device TEXT,
+  interfaces TEXT,
+  action TEXT,
+  status TEXT,
+  before TEXT,
+  after TEXT,
+  diff TEXT
+);
+"""
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+with get_conn() as conn:
+    conn.executescripts(SCHEMA_SQL) if hasattr(conn, 'executescripts') else conn.executescript(SCHEMA_SQL)
+
+def save_desired(device: str, interface: str, payload: str):
+    with get_conn() as conn:
+        conn.execute(
+            'REPLACE INTO desired_state (device, interface, payload) VALUES (?, ?, ?)',
+            (device, interface, payload)
+        )
+        conn.commit()
+
+def load_desired(device: str) -> dict[str, Any]:
+    with get_conn() as conn:
+        cur = conn.execute('SELECT interface, payload FROM desired_state WHERE device = ?', (device,))
+        return {row['interface']: row['payload'] for row in cur.fetchall()}
+
+def add_audit(user: str, device: str, interfaces: str, action: str, status: str, before: str = '', after: str = '', diff: str = ''):
+    with get_conn() as conn:
+        conn.execute('INSERT INTO audits (user, device, interfaces, action, status, before, after, diff) VALUES (?,?,?,?,?,?,?,?)',
+                     (user, device, interfaces, action, status, before, after, diff))
+        conn.commit()
+
+def list_audits(limit: int = 100) -> list[dict]:
+    with get_conn() as conn:
+        cur = conn.execute('SELECT * FROM audits ORDER BY id DESC LIMIT ?', (limit,))
+        return [dict(row) for row in cur.fetchall()]
