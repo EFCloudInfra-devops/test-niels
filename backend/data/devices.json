@@ -1,0 +1,6 @@
+{
+    "BRB2-ACCESS-SW01": { "site": "BRB2", "name": "BRB2-ACCESS-SW01", "host": "10.22.0.11", "username": "automation", "password": "pVoor7BmwBotzyKL", "mgmt_ip": "10.22.0.11"},
+    "GRN1-ACCESS-SW01": { "site": "GRN1", "name": "GRN1-ACCESS-SW01", "host": "10.20.0.11", "username": "automation", "password": "pVoor7BmwBotzyKL", "mgmt_ip": "10.20.0.11"},
+    "GRN1-ACCESS-SW02": { "site": "GRN1", "name": "GRN1-ACCESS-SW02", "host": "10.20.0.12", "username": "automation", "password": "pVoor7BmwBotzyKL", "mgmt_ip": "10.20.0.12"}
+}
+  

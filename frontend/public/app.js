@@ -1,275 +1,822 @@
+// frontend/public/app.js
+import {
+  drawPorts,
+  fetchInterfaceLiveClient,
+  highlightVlan,
+  clearVlanHighlight,
+} from "./renderer.js";
 
-// Frontend script (English labels)
-const API = '/api'; // proxied by nginx to backend; same origin, no CORS
-let DEVICE = null;
-let ports = [];
-let VLANS = [];
-let pollTimer = null;               // normal interval polling timer
-let modalOpen = false;              // guard to suspend polling when modal is open
-let repollActive = false;           // short re-poll state (after sync)
-let repollHandle = null;            // last setTimeout handle for short re-poll
-let currentPort = null;
+const POLL_INTERVAL = 30000;
+let pollTimer = null;
+let currentSwitch = window.currentSwitch = null;
+let pendingByInterface = {};
+let CURRENT_SWITCH_PORTS = null;
+let CURRENT_DEVICE = null;
 
-const gridGe0 = document.getElementById('grid-ge0');
-const gridGe1 = document.getElementById('grid-ge1');
-const gridXe  = document.getElementById('grid-xe');
-const gridAe  = document.getElementById('grid-ae');
+function renderInitialVC() {
+  const ports = [
+    ...allPhysicalPortsVC(2),
+    ...allUplinkPortsVC(2),
+    ...allAggregatePorts(8)
+  ];
 
-const lastRefreshEl = document.getElementById('lastRefresh');
-
-function makePort(info) {
-  const el = document.createElement('div');
-  el.className = `port ${info.type}`;
-  const configured = info.configured === true;
-  const adminUp = info.admin_up === true;
-  const operUp  = info.oper_up === true;
-  // Border for admin state
-  if (!configured || info.admin_up === null || info.admin_up === undefined) el.classList.add('admin-unknown');
-  else el.classList.add(adminUp ? 'admin-up' : 'admin-down');
-  // Dot for oper state
-  const dot = document.createElement('span');
-  dot.className = 'dot';
-  if (!configured || info.oper_up === null || info.oper_up === undefined) dot.classList.add('inactive');
-  else dot.classList.add(operUp ? 'oper-up' : 'oper-down');
-  // Labels: top name, bottom description or type
-  const desc = info.description ? info.description : '';
-  el.innerHTML = `<span class="label-top">${info.name}</span><span class="label-bottom">${desc}</span>`;
-  el.appendChild(dot);
-  el.addEventListener('click', async () => { currentPort = info; await openModal(info); });
-  return el;
+  drawPorts(ports, null); // ✅ GEEN backend data, alleen skeleton
 }
 
-function render() {
-  if (!gridGe0 || !gridGe1 || !gridXe || !gridAe) return;
-  gridGe0.innerHTML = ''; gridGe1.innerHTML = ''; gridXe.innerHTML = ''; gridAe.innerHTML = '';
-  // GE rows
-  for (let p=0; p<48; p++) {
-    const n0 = `ge-0/0/${p}`; const n1 = `ge-1/0/${p}`;
-    const i0 = ports.find(x=>x.name===n0) || {name:n0, type:'ge', configured:false, admin_up:null, oper_up:null};
-    const i1 = ports.find(x=>x.name===n1) || {name:n1, type:'ge', configured:false, admin_up:null, oper_up:null};
-    gridGe0.appendChild(makePort(i0));
-    gridGe1.appendChild(makePort(i1));
+function showView(name) {
+  document.getElementById("view-switch")
+    .classList.toggle("hidden", name !== "switch");
+  document.getElementById("view-approvals")
+    .classList.toggle("hidden", name !== "approvals");
+
+  document.getElementById("tab-switch")
+    .classList.toggle("active", name === "switch");
+  document.getElementById("tab-approvals")
+    .classList.toggle("active", name === "approvals");
+
+  if (name === "approvals") {
+    loadApprovals();
   }
-  // XE uplinks
-  for (let p=0; p<4; p++) {
-    const n0 = `xe-0/2/${p}`; const n1 = `xe-1/2/${p}`;
-    const i0 = ports.find(x=>x.name===n0) || {name:n0, type:'xe', configured:false, admin_up:null, oper_up:null};
-    const i1 = ports.find(x=>x.name===n1) || {name:n1, type:'xe', configured:false, admin_up:null, oper_up:null};
-    gridXe.appendChild(makePort(i0));
-    gridXe.appendChild(makePort(i1));
+
+  if (name === "switch") {
+    loadPending();
+    reloadAllPorts();
   }
-  // AE aggregates (sorted)
-  ports.filter(x=>x.type==='ae').sort((a,b)=>a.name.localeCompare(b.name)).forEach(ae=>gridAe.appendChild(makePort(ae)));
+  
+  // ✅ TERUGKEREN NAAR SWITCH TAB
+  if (name === "switch" && CURRENT_SWITCH_PORTS && CURRENT_DEVICE) {
+    drawPorts(CURRENT_SWITCH_PORTS, CURRENT_DEVICE);
+  }
 }
 
-async function fetchInterfaces() {
+// small helper to set text safely
+function setText(id, txt) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = txt;
+}
+
+// load switches into select
+async function loadSwitches() {
   try {
-    const res = await fetch(`${API}/switches/${DEVICE}/interfaces`);
-    if (!res.ok) return;
-    ports = await res.json();
-  } catch(e) { /* ignore */ }
+    const res = await fetch("/api/switches");
+    const list = await res.json();
+    const sel = document.getElementById("switch-select");
+    if (!sel) return;
+    sel.innerHTML = "";
+    list.forEach(s => {
+      const o = document.createElement("option");
+      o.value = s.name;
+      o.textContent = s.name;
+      sel.appendChild(o);
+    });
+    currentSwitch = list[0]?.name || null;
+    window.currentSwitch = currentSwitch;
+    sel.value = currentSwitch;
+    sel.addEventListener("change", async (e) => {
+      currentSwitch = e.target.value;
+      window.currentSwitch = currentSwitch;
+      // reload vlans for UI (if VLAN picker present)
+      await loadVlanList();
+      await reloadAllPorts();
+    });
+    // first time load VLANs
+    await loadVlanList();
+  } catch (e) {
+    console.error("loadSwitches", e);
+  }
 }
 
-
-async function syncInBackgroundAndRepoll() {
-  try { await fetch(`${API}/sync/${DEVICE}`, { method:'POST' }); } catch(e) {}
-  repollActive = true;
-  const until = Date.now() + 10_000;
-
-  async function repoll() {
-    // stop if modal is open or time expired or canceled
-    if (!repollActive || Date.now() > until) { repollActive = false; repollHandle = null; return; }
-    if (!modalOpen) {
-      await fetchInterfaces(); render(); await fetchLastRefresh();
+// load VLAN list from backend for the current switch
+let _vlans_cache = [];
+async function loadVlanList() {
+  _vlans_cache = [];
+  if (!currentSwitch) return;
+  try {
+    const r = await fetch(`/api/switches/${currentSwitch}/vlans`);
+    if (!r.ok) return;
+    _vlans_cache = await r.json(); // expected [{name, id}, ...]
+    // render VLAN picker if exists
+    const vlanSel = document.getElementById("vlan-select");
+    if (vlanSel) {
+      vlanSel.innerHTML = `<option value="">-- highlight VLAN --</option>`;
+      _vlans_cache.forEach(v => {
+        const o = document.createElement("option");
+        o.value = v.name;
+        o.textContent = `${v.name} (${v.id ?? ""})`;
+        vlanSel.appendChild(o);
+      });
+      vlanSel.addEventListener("change", (e) => {
+        const v = e.target.value;
+        clearVlanHighlight();
+        if (v) highlightVlan(v);
+      });
     }
-    repollHandle = setTimeout(repoll, 2000);
+  } catch (e) {
+    console.error("loadVlanList", e);
+  }
+}
+
+async function reloadAllPorts(live = false) {
+  if (!currentSwitch) return;
+
+  const url = live
+    ? `/api/switches/${currentSwitch}/interfaces/retrieve`
+    : `/api/switches/${currentSwitch}/interfaces`;
+
+  const r = await fetch(url, { method: live ? "POST" : "GET" });
+  if (!r.ok) return;
+
+  const data = await r.json();
+
+  CURRENT_DEVICE = currentSwitch;
+  CURRENT_SWITCH_PORTS = data.interfaces;
+
+  drawPorts(
+    enrichPorts(
+      data.interfaces,
+      data.source,
+      data.retrieved_at
+    ),
+    currentSwitch
+  );
+}
+
+function enrichPorts(ports, source, ts) {
+  return ports.map(p => ({
+    ...p,
+    _source: source,
+    _retrieved_at: ts,
+    pending: pendingByInterface[`${currentSwitch}|${p.name}`] != null
+  }));
+}
+
+// --- modal logic: now allows opening unconfigured port for configuration
+async function openModalForPort(port) {
+  // We allow opening modal for unconfigured ports too.
+  // But we will not attempt to fetch 'live' info for them (unless configured).
+  if (!currentSwitch) return;
+  
+  // populate initial form values
+  const modal = document.getElementById("modal");
+  if (!modal) return;
+  
+  const diffBox = document.getElementById("diff-box");
+  if (diffBox) diffBox.innerHTML = "";
+  
+  const approveBtn = document.getElementById("approve-btn");
+  if (approveBtn) approveBtn.disabled = true;
+  
+  // eventueel statussen resetten
+  document.querySelectorAll(".diff-added, .diff-removed")
+    .forEach(el => el.classList.remove("diff-added", "diff-removed"));
+  setText("modalTitle", `Port ${port.name}`);
+  const descr = document.getElementById("ifDescr");
+  const modeSel = document.getElementById("modeSelect");
+  const accessSel = document.getElementById("accessVlanSelect");
+  const trunkSel = document.getElementById("trunkVlanSelect");
+  const nativeInput = document.getElementById("nativeVlan");
+  const submitBtn = document.getElementById("submitBtn");
+  const isPhysical = port.type === "ge" || port.type === "xe";
+
+  // --- reset portInfo altijd ---
+  const portInfo = document.getElementById("portInfo");
+  if (portInfo) portInfo.innerHTML = "";
+  if (port.vc_port) {
+    portInfo.innerHTML += `
+      <div class="info-block vc-port">
+        <strong>Virtual Chassis</strong>
+        <div class="badge badge-vc">
+          VC port${port.vc_role ? ` (${port.vc_role})` : ""}
+        </div>
+      </div>
+    `;
+  }
+  if (descr) descr.value = port.description || "";
+  if (nativeInput) nativeInput.value = port.native_vlan || "";
+
+  // load VLANs for selects (use cached _vlans_cache)
+  if (accessSel) {
+    accessSel.innerHTML = `<option value="">-- select VLAN --</option>`;
+    _vlans_cache.forEach(v => {
+      const o = document.createElement("option");
+      o.value = v.name;
+      o.textContent = `${v.name} (${v.id ?? ""})`;
+      accessSel.appendChild(o);
+    });
+  }
+  if (trunkSel) {
+    trunkSel.innerHTML = "";
+    _vlans_cache.forEach(v => {
+      const o = document.createElement("option");
+      o.value = v.name;
+      o.textContent = `${v.name} (${v.id ?? ""})`;
+      trunkSel.appendChild(o);
+    });
+    trunkSel.multiple = true;
   }
 
-  repoll();
-}
+  // set initial UI depending on whether port is configured
+  if (modeSel) modeSel.value = port.mode || "access";
+  if (accessSel && port.access_vlan) accessSel.value = port.access_vlan;
+  if (trunkSel && Array.isArray(port.trunk_vlans)) {
+    const vals = port.trunk_vlans;
+    Array.from(trunkSel.options).forEach(opt => {
+      opt.selected = vals.includes(opt.value);
+    });
+  }
 
-function cancelRepoll() {
-  repollActive = false;
-  if (repollHandle) { clearTimeout(repollHandle); repollHandle = null; }
-}
+  // If port configured & up -> try to fetch live info and show speed etc
+  if (isPhysical && port.configured && port.oper_up) {
+    try {
+      const live = await fetchInterfaceLiveClient(currentSwitch, port.name, port);
+      if (live) {
+        if (descr) descr.value = live.description || descr.value || "";
+        if (modeSel) modeSel.value = live.mode || modeSel.value;
+        if (accessSel && live.access_vlan) accessSel.value = live.access_vlan;
+        if (trunkSel && live.trunk_vlans) {
+          Array.from(trunkSel.options).forEach(opt => {
+            opt.selected = (live.trunk_vlans || []).includes(opt.value);
+          });
+        }
+        if (nativeInput && live.native_vlan) nativeInput.value = live.native_vlan;
+      }
+    } catch (e) { /* ignore */ }
+  }
 
-async function initInventory() {
-  try { await fetch(`${API}/health`); } catch(e) { console.error('Backend down'); return; }
-  const inv = await (await fetch(`${API}/inventory`)).json();
-  const deviceSelect = document.getElementById('deviceSelect');
-  deviceSelect.innerHTML = inv.map(d=>`<option value="${d.name}">${d.name}</option>`).join('');
-  DEVICE = inv[0]?.name || null;
-  deviceSelect.value = DEVICE;
-  // Fetch VLANs up front
-  VLANS = await (await fetch(`${API}/devices/${DEVICE}/vlans`)).json();
-  // Initial fetch (may be empty on fresh start) -> render immediately
-  await fetchInterfaces(); render(); await fetchLastRefresh();
-  // Kick sync in background and repoll for ~10s
-  await syncInBackgroundAndRepoll();
-  // Start normal polling afterwards
-  setupPolling();
-}
+  if (port.type === "ae") {
+    const members = [...document.querySelectorAll(
+      `[data-bundle="${port.name}"]`
+    )].map(el => el.dataset.ifname);
+  
+    portInfo.innerHTML += `
+      <div class="info-block">
+        <strong>LACP members</strong>
+        <ul>
+          ${members.length
+            ? members.map(m => `<li>${m}</li>`).join("")
+            : "<li>None</li>"
+          }
+        </ul>
+      </div>
+    `;
+  } 
 
-function setupPolling() {
-  if (pollTimer) clearInterval(pollTimer);
-  const interval = Math.max(5, parseInt(document.getElementById('pollInput').value,10) || 60) * 1000;
-  pollTimer = setInterval(async ()=>{
-    await fetchInterfaces(); render(); await fetchLastRefresh();
-  }, interval);
-}
+  // UI: show/hide selects based on mode
+  const fieldAccess = document.getElementById("field-access");
+  const fieldTrunk  = document.getElementById("field-trunk");
+  
+  const toggleModeFields = () => {
+    const m = modeSel?.value || "access";
+  
+    if (fieldAccess)
+      fieldAccess.style.display = (m === "access") ? "" : "none";
+  
+    if (fieldTrunk)
+      fieldTrunk.style.display = (m === "trunk") ? "" : "none";
+  };
+  
+  modeSel?.addEventListener("change", toggleModeFields);
+  toggleModeFields();
 
-function fillVlanSelect(selectEl, allowEmpty=false) {
-  const opts = VLANS.map(v => `<option value="${v.name}">${v.name}${v.id ? ` (${v.id})` : ''}</option>`).join('');
-  selectEl.innerHTML = (allowEmpty ? `<option value=""></option>` : '') + opts;
-}
+  // show modal
+  modal.classList.remove("hidden");
 
-function setTrunkInline(selected) {
-  const holder = document.getElementById('trunkSelected');
-  holder.innerHTML = (selected || []).map(n => `<span class="inline-badge">${n}</span>`).join('');
-}
-
-async function openModal(info) {
-
-  // Cancel all background polling while modal is open
-  modalOpen = true;
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  cancelRepoll();
-
-  await updateModalLive(info.name);
-  document.getElementById('modal').classList.remove('hidden');
-
-}
-
-function closeModal() {
-  document.getElementById('modal').classList.add('hidden');
-  modalOpen = false;
-
-  // Resume normal polling after closing modal
-  setupPolling();
-}
-
-// Close when clicking backdrop
-document.getElementById('modal').addEventListener('click', (e) => {
-  if (e.target && e.target.id === 'modal') closeModal();
-});
-
-// Close on Esc
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && modalOpen) closeModal();
-});
-
-async function updateModalLive(ifName) {
-  try {
-    const res = await fetch(`${API}/switches/${DEVICE}/interface/${encodeURIComponent(ifName)}/live`);
-    if (!res.ok) { const txt = await res.text(); throw new Error(`Live failed: ${txt}`); }
-    const live = await res.json();
-    const modalTitle = document.getElementById('modalTitle');
-    const adminBadge = document.getElementById('adminBadge');
-    const modeSelect = document.getElementById('modeSelect');
-    const accessSelect = document.getElementById('accessVlanSelect');
-    const trunkSelect = document.getElementById('trunkVlanSelect');
-    const nativeSelect = document.getElementById('nativeVlanSelect');
-    const bundleHint = document.getElementById('bundleHint');
-
-    modalTitle.textContent = `Port ${live.name}`;
-    if (adminBadge) adminBadge.classList.toggle('hidden', live.admin_up !== false);
-
-    fillVlanSelect(accessSelect, true);
-    fillVlanSelect(nativeSelect, true);
-    fillVlanSelect(trunkSelect, false);
-
-    modeSelect.value = live.mode || 'access';
-    if (live.mode === 'access') accessSelect.value = live.access_vlan || '';
-
-    const trunkNames = live.trunk_vlans || [];
-    [...trunkSelect.options].forEach(opt => { opt.selected = trunkNames.includes(opt.value); });
-    setTrunkInline(trunkNames);
-
-    nativeSelect.value = live.native_vlan || '';
-
-    if (live.bundle) {
-      const siblings = ports.filter(p => p.bundle === live.bundle && p.name !== live.name).map(p => p.name);
-      bundleHint.classList.remove('hidden');
-      bundleHint.textContent = `LACP bundle: ${live.bundle}${siblings.length ? ' | peers: ' + siblings.join(', ') : ''}`;
-    } else {
-      bundleHint.classList.add('hidden');
-      bundleHint.textContent = '';
+  // attach submit handler (one-time)
+  const form = document.getElementById("configForm");
+  if (!form) return;
+    
+  function collectFormConfig(port) {
+    const mode = modeSelect.value;
+  
+    return {
+      name: port.name,
+      description: ifDescr.value || "",
+      mode,
+  
+      access_vlan:
+        mode === "access" ? accessVlanSelect.value || null : port.access_vlan,
+  
+      trunk_vlans:
+        mode === "trunk"
+          ? Array.from(trunkVlanSelect.selectedOptions).map(o => o.value)
+          : port.trunk_vlans || [],
+  
+      native_vlan:
+        mode === "trunk" ? nativeVlan.value || null : port.native_vlan || null
+    };
+  }
+  
+  
+  form.addEventListener("input", () => {
+    const cfg = collectFormConfig(port);
+    const diffs = diffObject(port, cfg);
+  
+    renderDiff(port, cfg);
+    submitBtn.disabled = diffs.length === 0;
+    if (port.vc_port && submitBtn) {
+      submitBtn.disabled = true;
     }
-    adjustVisibility();
-  } catch(err) {
-    console.error('updateModalLive error:', err);
-    alert('Failed to load live data: ' + err.message);
-  }
-}
+  });
+  
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    // build config object
+    const cfg = {
+      name: port.name,
+      description: descr ? descr.value : "",
+      mode: modeSel ? modeSel.value : "access",
+      access_vlan: (modeSel && modeSel.value === "access" && accessSel) ? accessSel.value : null,
+      trunk_vlans: (modeSel && modeSel.value === "trunk" && trunkSel) ? Array.from(trunkSel.selectedOptions).map(o => o.value) : [],
+      native_vlan: (modeSel && modeSel.value === "trunk" && nativeInput) ? nativeInput.value || null : null
+    };
 
-function adjustVisibility() {
-  const isAccess = document.getElementById('modeSelect').value === 'access';
-  document.querySelectorAll('.access-only').forEach(e=>e.style.display = isAccess ? 'grid' : 'none');
-  document.querySelectorAll('.trunk-only').forEach(e=>e.style.display = !isAccess ? 'grid' : 'none');
-}
+    // create change request payload
+    const payload = {
+      device: currentSwitch,
+      interface: cfg.name,
+      config: cfg,
+      requester: window?.USER?.username || "ui",
+      created_at: new Date().toISOString(),
+      status: "pending"
+    };
 
-async function fetchLastRefresh() {
-  try {
-    const res = await fetch(`/api/last-refresh/${DEVICE}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    lastRefreshEl.textContent = data.last_refresh ? new Date(data.last_refresh).toLocaleString() : '—';
-  } catch(e) {
-    lastRefreshEl.textContent = '—';
-  }
-}
-
-// Commit (single-port; bulk removed)
-document.getElementById('configForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const modeSelect = document.getElementById('modeSelect');
-  const accessSelect = document.getElementById('accessVlanSelect');
-  const trunkSelect = document.getElementById('trunkVlanSelect');
-  const nativeSelect = document.getElementById('nativeVlanSelect');
-
-  const mode = modeSelect.value;
-  const access_vlan = accessSelect.value || undefined;   // VLAN name
-  const trunk_vlans = [...trunkSelect.selectedOptions].map(o => o.value);
-  const native_vlan = nativeSelect.value || undefined;
-
-  const cfg = {
-    name: currentPort.name,
-    member: currentPort.member || 0,
-    fpc: currentPort.fpc || 0,
-    type: currentPort.type,
-    port: currentPort.port || 0,
-    mode,
-    access_vlan,
-    trunk_vlans: mode === 'trunk' ? trunk_vlans : undefined,
-    native_vlan,
+    try {
+      const r = await fetch("/api/requests", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      if (!r.ok) {
+        alert("Failed to create change request");
+      } else {
+        alert("Change request created (pending approval)");
+        // optionally close modal and fast-repoll to show candidate state if you want
+        modal.classList.add("hidden");
+      }
+    } catch (err) {
+      console.error("request create failed", err);
+      alert("Failed to create change request (network)");
+    } finally {
+      form.removeEventListener("submit", onSubmit);
+    }
+  };
+  form.onsubmit = e => {
+    e.preventDefault();
+    onSubmit(e);
   };
 
-  const payload = { device: DEVICE, user: 'niels', interfaces: [currentPort.name], config: cfg };
-  try {
-    const res = await fetch(`${API}/commit`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    if (!res.ok) { const txt = await res.text(); throw new Error(`Commit failed: ${txt}`); }
-    const data = await res.json();
-    if (data.ok) {
-      document.getElementById('modal').classList.add('hidden');
-      await fetchInterfaces(); render();
-    } else {
-      alert('Commit failed: ' + data.error);
-    }
-  } catch(err) {
-    alert(err.message);
+  // close button handling
+  const closeBtn = document.getElementById("closeModalBtn");
+  if (closeBtn) {
+    const close = () => {
+      modal.classList.add("hidden");
+      form.removeEventListener("submit", onSubmit);
+    };
+    closeBtn.onclick = close;
+  }
+}
+
+window.openModalForPort = openModalForPort;
+
+function closeModal() {
+  const modal = document.getElementById("modal");
+  const portInfo = document.getElementById("portInfo");
+
+  modal.classList.add("hidden");
+
+  // 🔥 dit miste
+  if (portInfo) portInfo.innerHTML = "";
+
+  // optional: reset form
+  const form = document.getElementById("configForm");
+  if (form) form.reset();
+}
+
+window.closeModal = closeModal;
+
+document.addEventListener("click", (e) => {
+  if (
+    e.target.id === "cancelModalBtn" ||
+    e.target.id === "closeModalBtn" ||
+    e.target.classList.contains("modal-close")
+  ) {
+    closeModal();
   }
 });
 
-// Toolbar
-
-document.getElementById('syncBtn').addEventListener('click', async ()=>{
-  await fetch(`/api/sync/${DEVICE}`, { method:'POST' });
-  await fetchInterfaces(); render(); await fetchLastRefresh();
+document.getElementById("modal").addEventListener("click", (e) => {
+  if (e.target.id === "modal") {
+    closeModal();
+  }
 });
 
-document.getElementById('deviceSelect').addEventListener('change', async (e)=>{ DEVICE = e.target.value; VLANS = await (await fetch(`${API}/devices/${DEVICE}/vlans`)).json(); await fetchInterfaces(); render(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeModal();
+});
 
-document.getElementById('pollInput').addEventListener('change', setupPolling);
+// bootstrap
+document.addEventListener("DOMContentLoaded", () => {
 
-initInventory();
+  document.getElementById("tab-switch").onclick = () => showView("switch");
+  document.getElementById("tab-approvals").onclick = () => showView("approvals");
 
+  renderInitialVC();     // ✅ altijd iets tonen
+  loadSwitches();        // vult dropdown
+  loadPending();
+  showView("switch");
+});
+
+// -----------------------------
+// Approvals UI
+// -----------------------------
+async function loadApprovals() {
+  const list = document.getElementById("approvalsList");
+  const empty = document.getElementById("no-approvals");
+  const count = document.getElementById("approvals-count");
+
+  list.innerHTML = "Loading…";
+
+  const r = await fetch("/api/requests?status=pending", {
+    headers: { "X-Role": "approver" }
+  });
+
+  if (!r.ok) {
+    list.textContent = "Failed to load approvals";
+    return;
+  }
+
+  const items = await r.json();
+  list.innerHTML = "";
+
+  count.textContent = items.length;
+
+  if (items.length === 0) {
+    empty.classList.remove("hidden");
+    return;
+  }
+
+  empty.classList.add("hidden");
+
+  items.forEach(req => {
+    const card = document.createElement("div");
+    card.className = "approval-card";
+  
+    // ===== header =====
+    const meta = document.createElement("div");
+    meta.className = "approval-meta";
+    meta.innerHTML = `
+      <div>
+        <strong>${req.device}</strong>
+        <span class="dim">${req.interface}</span>
+      </div>
+      <div class="approval-tags">
+        <span class="tag pending">PENDING</span>
+        <span class="tag user">${req.requester}</span>
+        <span class="tag time">
+          ${new Date(req.created_at).toLocaleString()}
+        </span>
+      </div>
+    `;
+  
+    // ===== diff =====
+    const diffBox = document.createElement("div");
+    diffBox.className = "approval-diff";
+  
+    const diffs = diffObject(req.current_config, req.config);
+  
+    const pre = document.createElement("pre");
+    pre.textContent = diffs.map(d =>
+      `${d.old !== undefined ? "- " : ""}${d.key}: ${d.old ?? "—"}\n` +
+      `${d.new !== undefined ? "+ " : ""}${d.key}: ${d.new ?? "—"}`
+    ).join("\n");
+  
+    diffBox.appendChild(pre);
+  
+    // ===== actions =====
+    const actions = document.createElement("div");
+    actions.className = "approval-actions";
+  
+    const approveBtn = document.createElement("button");
+    approveBtn.className = "btn approve";
+    approveBtn.textContent = "✅ Approve";
+    approveBtn.onclick = () => approveRequest(req.id);
+  
+    const rejectBtn = document.createElement("button");
+    rejectBtn.className = "btn reject";
+    rejectBtn.textContent = "❌ Reject";
+    rejectBtn.onclick = () => rejectRequest(req.id);
+  
+    actions.append(approveBtn, rejectBtn);
+  
+    // ===== assemble card =====
+    card.append(meta, diffBox, actions);
+    list.appendChild(card);
+  });  
+}
+
+async function approveRequest(id) {
+  if (!confirm("Approve & apply this change?")) return;
+
+  const r = await fetch(`/api/requests/${id}/approve`, {
+    method: "POST",
+    headers: {
+      "X-User": "admin",
+      "X-Role": "approver"
+    }
+  });
+
+  if (!r.ok) {
+    alert("Approve failed");
+    return;
+  }
+
+  const approvedReq = await r.json();
+
+  // 🔥 refresh pending map
+  await loadPending();
+
+  // 🔄 refresh switch data (cached first)
+  await reloadAllPorts();
+
+  // ✨ highlight approved port
+  flashApprovedPort(
+    approvedReq.device,
+    approvedReq.interface
+  );
+
+  // refresh approvals list
+  await loadApprovals();
+}
+
+
+async function rejectRequest(id) {
+  const reason = prompt("Reject reason?");
+  if (!reason) return;
+
+  await fetch(`/api/requests/${id}/reject?comment=${encodeURIComponent(reason)}`, {
+      method: "POST",
+      headers: {
+          "X-User": "admin",
+          "X-Role": "approver"
+      }
+  });
+
+  await loadApprovals();
+}
+
+function setFetchStatus(text, cls = "loading") {
+  const el = document.getElementById("fetch-status");
+  el.textContent = text;
+  el.className = "status " + cls;
+}
+
+async function loadInterfaces(device) {
+  try {
+    const r = await fetch(`/api/switches/${device}/interfaces`);
+    const data = await r.json();
+
+    setFetchStatus("✅ Switch data geladen", "ok");
+
+    mergeAndRedrawPorts(device, data);
+
+  } catch {
+    setFetchStatus("⚠️ Kan switch niet ophalen", "error");
+  }
+}
+
+function allPhysicalPortsVC(members = 2) {
+  const ports = [];
+  for (let member = 0; member < members; member++) {
+    for (let i = 0; i < 48; i++) {
+      ports.push({
+        name: `ge-${member}/0/${i}`,
+        type: "ge",
+        member,
+        port: i,
+        oper_up: false,
+        admin_up: false,
+        configured: false,
+        bundle: null,
+        access_vlan: null,
+        trunk_vlans: [],
+        description: null
+      });
+    }
+  }
+
+  return ports;
+}
+
+function allUplinkPortsVC(members = 2) {
+  const ports = [];
+
+  for (let member = 0; member < members; member++) {
+    for (let i = 0; i < 4; i++) {
+      ports.push({
+        name: `xe-${member}/2/${i}`,
+        type: "xe",
+        member,
+        configured: false,
+        oper_up: false
+      });
+    }
+  }
+  return ports;
+}
+
+function allAggregatePorts(max = 8) {
+  return Array.from({ length: max }, (_, i) => ({
+    name: `ae${i}`,
+    type: "ae",
+    configured: false,
+    oper_up: false,
+    members: []
+  }));
+}
+
+function mergeAndRedrawPorts(device, livePorts) {
+
+  // ✅ normalize input
+  const portsArray = Array.isArray(livePorts)
+    ? livePorts
+    : (livePorts.interfaces || livePorts.data || []);
+
+  if (!Array.isArray(portsArray)) {
+    console.error("mergeAndRedrawPorts: invalid data", livePorts);
+    return;
+  }
+
+  const map = {};
+  // GE member 0 & 1
+  [0, 1].forEach(m => {
+    for (let i = 0; i < 48; i++) {
+      map[`ge-${m}/0/${i}`] = {
+        name: `ge-${m}/0/${i}`,
+        type: "ge",
+        configured: false
+      };
+    }
+  });
+
+  // XE uplinks (4 per member)
+  [0, 1].forEach(m => {
+    for (let i = 0; i < 4; i++) {
+      map[`xe-${m}/2/${i}`] = {
+        name: `xe-${m}/2/${i}`,
+        type: "xe",
+        configured: false
+      };
+    }
+  });
+
+  // overlay live data
+  livePorts.forEach(p => {
+    if (pendingByInterface[`${device}|${p.name}`]) {
+      map[p.name].pending = true;
+    }    
+    map[p.name] = {
+      ...map[p.name],
+      ...p,
+      configured: true
+    };
+  });
+
+  drawPorts(Object.values(map), device);
+}
+
+async function loadPending() {
+  const r = await fetch("/api/requests?status=pending");
+  if (!r.ok) return;
+
+  const reqs = await r.json();
+  pendingByInterface = {};
+
+  reqs.forEach(req => {
+    pendingByInterface[`${req.device}|${req.interface}`] = req;
+  });
+}
+
+document.getElementById("btn-retrieve").onclick = async () => {
+  const sw = document.getElementById("switch-select").value;
+  if (!sw) return;
+
+  currentSwitch = sw;
+  window.currentSwitch = sw;
+  reloadAllPorts(true);
+
+  const overlay = document.getElementById("grid-overlay");
+  overlay.classList.remove("hidden");
+
+  try {
+    const r = await fetch(`/api/switches/${sw}/interfaces/retrieve`, {
+      method: "POST"
+    });
+    await reloadAllPorts();
+    
+    if (!r.ok) throw new Error("fetch failed");
+
+    const livePorts = await r.json();
+
+    mergeAndRedrawPorts(sw, livePorts); // ✅ juiste functie
+  } catch (e) {
+    console.error(e);
+    alert("Config ophalen mislukt");
+  } finally {
+    overlay.classList.add("hidden");
+  }
+};
+
+function diffObject(oldCfg = {}, newCfg = {}) {
+  return Object.keys(newCfg).flatMap(k =>
+    oldCfg[k] !== newCfg[k]
+      ? [{ key: k, old: oldCfg[k], new: newCfg[k] }]
+      : []
+  );
+}
+
+function fmtVal(v) {
+  if (v === undefined || v === null) return "";
+  if (Array.isArray(v)) return v.join(",") || "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
+function isPresent(v) {
+  // consider non-empty string / non-empty array / non-null non-undefined as present
+  if (v === undefined || v === null) return false;
+  if (Array.isArray(v)) return v.length > 0;
+  return String(v).trim().length > 0;
+}
+
+function renderDiff(oldCfg, newCfg) {
+  const box = document.getElementById("diffBox");
+  if (!box) return;
+
+  const diffs = diffObject(oldCfg, newCfg);
+
+  if (!diffs.length) {
+    box.innerHTML = `<span style="opacity:.6">No changes</span>`;
+    return;
+  }
+
+  // build compact HTML (minimal whitespace) and small vertical spacing
+  box.innerHTML = diffs.map(d => {
+    const oldPresent = isPresent(d.old);
+    const newPresent = isPresent(d.new);
+    const oldText = fmtVal(d.old) || "—";
+    const newText = fmtVal(d.new) || "—";
+
+    // cases:
+    // 1) old && new -> show both - and +
+    // 2) !old && new -> only + (creation)
+    // 3) old && !new -> only - (deletion)
+    // 4) neither -> shouldn't happen (skip)
+    let out = "";
+
+    if (oldPresent && newPresent) {
+      out += `<div class="diff-line diff-remove" style="margin:3px 0">- ${d.key}: ${oldText}</div>`;
+      out += `<div class="diff-line diff-add"    style="margin:3px 0">+ ${d.key}: ${newText}</div>`;
+    } else if (!oldPresent && newPresent) {
+      out += `<div class="diff-line diff-add"    style="margin:3px 0">+ ${d.key}: ${newText}</div>`;
+    } else if (oldPresent && !newPresent) {
+      out += `<div class="diff-line diff-remove" style="margin:3px 0">- ${d.key}: ${oldText}</div>`;
+    }
+    return out;
+  }).join("");
+
+  // optional: ensure box uses a compact font/line-height
+  box.style.lineHeight = "1.15";
+}
+
+
+function collectVcLinks(ports) {
+  const vc = ports.filter(p => p.vc_port);
+
+  // group by fpc/port (2/2 matcht 2/2)
+  const map = {};
+  for (const p of vc) {
+    const key = `${p.fpc}/${p.port}`;
+    map[key] ||= [];
+    map[key].push(p);
+  }
+
+  // only pairs
+  return Object.values(map).filter(g => g.length === 2);
+}
+
+function flashApprovedPort(device, ifname) {
+  // alleen highlighten als we op die switch kijken
+  if (device !== CURRENT_DEVICE) return;
+
+  const el = document.querySelector(
+    `.port[data-ifname="${ifname}"]`
+  );
+
+  if (!el) return;
+
+  el.classList.add("approved");
+
+  setTimeout(() => {
+    el.classList.remove("approved");
+  }, 1600);
+}

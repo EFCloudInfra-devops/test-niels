@@ -1,6 +1,0 @@
-
-[
-  {"name":"BRB2-ACCESS-SW01", "mgmt_ip":"10.22.0.11", "group":"BRB2"},
-  {"name":"GRN1-ACCESS-SW01", "mgmt_ip":"10.20.0.11", "group":"GRN1"},
-  {"name":"GRN1-ACCESS-SW02", "mgmt_ip":"10.20.0.12", "group":"GRN1"}
-]

@@ -1,36 +1,64 @@
-
+# /app/backend/app/netconf.py
+import os
+import json
+import time
+import threading, re
 from ncclient import manager
+from ncclient.xml_ import to_ele
 from lxml import etree
-from typing import Dict, Any, List, Tuple
-from .config import settings, Device
+from datetime import datetime
+from .models import InterfaceCache
 
-# --- helper: normalize reply to lxml Element ---
-def to_ele(reply):
-    if hasattr(reply, 'data_ele') and reply.data_ele is not None:
-        return reply.data_ele
-    xml = getattr(reply, 'xml', None)
-    if xml:
-        root = etree.fromstring(xml.encode() if isinstance(xml, str) else xml)
-        data = root.find('.//*[local-name()="data"]')
-        return data if data is not None else root
-    return reply
+DEFAULT_PORT = 830
 
-
-def connect(dev: Device) -> manager.Manager:
-    return manager.connect(
-        host=dev.mgmt_ip,
-        port=830,
-        username=settings.netconf_username,
-        password=settings.netconf_password,
-        hostkey_verify=False,
-        allow_agent=False,
-        look_for_keys=False,
-        timeout=20,
-        device_params={'name':'junos'}
-    )
+# Simple in-memory caches and locks
+_CACHE_LOCK = threading.Lock()
+_cache_interfaces = {}   # device -> {"ts": float, "data": [...]}
+_cache_live = {}         # (device, ifname) -> {"ts": float, "data": {...}}
+_device_locks = {}       # device -> threading.Lock()
+_cache_ae = {}            # (device, ae_name) -> {"ts": float, "data": dict}
+_CACHE_VC = {}       # device -> { ts, data }
 
 
-def get_configuration(dev: Device):
+# TTLs (seconds)
+INTERFACES_TTL = float(os.getenv("INTERFACES_TTL", "5"))   # small TTL
+INTERFACE_LIVE_TTL = float(os.getenv("INTERFACE_LIVE_TTL", "3"))
+AE_TTL = float(os.getenv("AE_TTL", "15"))
+_CACHE_VC = {}       # device -> { ts, data }
+
+
+def _get_device_lock(dev_name):
+    with _CACHE_LOCK:
+        if dev_name not in _device_locks:
+            _device_locks[dev_name] = threading.Lock()
+        return _device_locks[dev_name]
+
+def connect(dev):
+    """dev may be dict or device-name (string)"""
+    from .devices import get_device
+    if isinstance(dev, str):
+        dev = get_device(dev)
+    host = dev.get("host")
+    port = dev.get("port", DEFAULT_PORT)
+    user = dev.get("username")
+    pw = dev.get("password")
+    return manager.connect(host=host, port=port, username=user, password=pw,
+                           hostkey_verify=False, allow_agent=False, look_for_keys=False, timeout=30)
+
+def to_ele(response):
+    try:
+        data_xml = response.data_xml
+    except Exception:
+        data_xml = str(response)
+    return etree.fromstring(data_xml.encode()) if isinstance(data_xml, str) else response
+
+# --------------------------
+# (Your existing parsing functions)
+# I include the same parse_interfaces_config, get_configuration, get_operational,
+# get_vlans, get_interface_live, commit_changes etc., but keep them as internal helpers.
+# --------------------------
+
+def get_configuration(dev):
     with connect(dev) as m:
         try:
             criteria = etree.XML('<configuration><interfaces/></configuration>')
@@ -39,7 +67,14 @@ def get_configuration(dev: Device):
         except Exception:
             reply = m.get_config(source='running')
             return to_ele(reply)
-
+        
+def _get_interfaces_config_cached_ele(dev_name):
+    """
+    Returns cached <configuration><interfaces> element for device.
+    Reuses get_interfaces_cached TTL but returns XML tree for AE parsing.
+    """
+    cfg = get_configuration(dev_name)
+    return cfg
 
 def parse_interfaces_config(cfg_ele):
     interfaces = []
@@ -60,6 +95,7 @@ def parse_interfaces_config(cfg_ele):
                 member, fpc, port = rest.split('/')
                 member_i = int(member); fpc_i = int(fpc); port_i = int(port)
             except Exception:
+                # unknown naming scheme — skip
                 continue
         # description
         desc_list = ifl.xpath('./*[local-name()="description"]/text()')
@@ -72,18 +108,18 @@ def parse_interfaces_config(cfg_ele):
         esw_nodes = family.xpath('./*[local-name()="ethernet-switching"]') if family is not None else []
         esw = esw_nodes[0] if esw_nodes else None
         mode = 'access'; access_vlan = None; trunk_vlans = None; native_vlan = None
-        if esw is not None:            
+        if esw is not None:
             im_list = esw.xpath('./*[local-name()="interface-mode"]/text()')
             if not im_list:
-                im_list = esw.xpath('./*[local-name()="port-mode"]/text()')  # fallback
+                im_list = esw.xpath('./*[local-name()="port-mode"]/text()')
             if im_list:
-                mode = im_list[0].strip()            
+                mode = im_list[0].strip()
             members = esw.xpath('./*[local-name()="vlan"]/*[local-name()="members"]/text()')
             members = [m.strip() for m in members if m and m.strip()]
             if mode == 'access' and members:
                 access_vlan = members[0]
             elif mode == 'trunk' and members:
-                trunk_vlans = members   # list of VLAN names
+                trunk_vlans = members
             nvid_list = esw.xpath('./*[local-name()="native-vlan-id"]/text()')
             if nvid_list:
                 native_vlan = nvid_list[0].strip()
@@ -132,8 +168,69 @@ def parse_interfaces_config(cfg_ele):
         })
     return interfaces
 
+def get_ae_summary_cached(dev_name, ae_name):
+    """
+    Fast AE lookup WITHOUT live RPC.
+    Uses interfaces config only.
+    """
+    now = time.time()
+    key = (dev_name, ae_name)
 
-def get_operational(dev: Device) -> Dict[str, Dict[str, Any]]:
+    # cache hit
+    entry = _cache_ae.get(key)
+    if entry and (now - entry["ts"] < AE_TTL):
+        return entry["data"]
+
+    cfg_ele = _get_interfaces_config_cached_ele(dev_name)
+
+    result = {
+        "name": ae_name,
+        "type": "ae",
+        "configured": False,
+        "oper_up": False,
+        "admin_up": True,
+        "members": [],
+        "bundle": None,
+        "mode": None,
+        "access_vlan": None,
+        "trunk_vlans": None,
+        "native_vlan": None,
+        "lacp_mode": None,
+        "description": None,
+    }
+
+    # walk interfaces once
+    for ifl in cfg_ele.xpath('//*[local-name()="interfaces"]/*[local-name()="interface"]'):
+        name = ifl.xpath('./*[local-name()="name"]/text()')
+        if not name:
+            continue
+        ifname = name[0].strip()
+
+        # AE config itself
+        if ifname == ae_name:
+            result["configured"] = True
+            desc = ifl.xpath('./*[local-name()="description"]/text()')
+            if desc:
+                result["description"] = desc[0].strip()
+
+            agg = ifl.xpath('./*[local-name()="aggregated-ether-options"]')
+            if agg:
+                if agg[0].xpath('./*[local-name()="lacp"]/*[local-name()="active"]'):
+                    result["lacp_mode"] = "active"
+                elif agg[0].xpath('./*[local-name()="lacp"]/*[local-name()="passive"]'):
+                    result["lacp_mode"] = "passive"
+
+        # physical members
+        bundle = ifl.xpath('.//*[local-name()="ieee-802.3ad"]/*[local-name()="bundle"]/text()')
+        if bundle and bundle[0].strip() == ae_name:
+            result["members"].append(ifname)
+
+    result["members"].sort()
+
+    _cache_ae[key] = {"ts": now, "data": result}
+    return result
+
+def get_operational(dev):
     with connect(dev) as m:
         rpc = etree.XML('<get-interface-information><terse/></get-interface-information>')
         res = m.dispatch(rpc)
@@ -151,8 +248,114 @@ def get_operational(dev: Device) -> Dict[str, Dict[str, Any]]:
             oper[name] = {'admin_up': (admin == 'up'), 'oper_up': (oper_s == 'up')}
         return oper
 
+def get_interfaces_raw(dev):
+    """
+    Return merged config + oper with VC ports included.
 
-def get_vlans(dev: Device):
+    Rules:
+    - VC ports use ONLY 'show virtual-chassis vc-port' for status
+    - No get-interface-information for VC
+    - VC ports are non-configurable
+    """
+
+    cfg_ele   = get_configuration(dev)
+    cfg_ports = parse_interfaces_config(cfg_ele)  # configured only
+    oper      = get_operational(dev)
+    vc_ports  = get_vc_ports_raw(dev)
+
+    print("VC PORTS RAW:", vc_ports)
+
+    cfg_map = {p["name"]: p for p in cfg_ports}
+    vc_map  = {p["name"]: p for p in vc_ports}
+
+    # -------------------------------------------------
+    # 1️⃣ FIRST: process configured interfaces
+    # -------------------------------------------------
+    for name, p in cfg_map.items():
+
+        # -------- VC PORT OVERRIDE --------
+        if name in vc_map:
+            vc = vc_map[name]
+
+            p["vc_port"]   = True
+            p["vc_status"] = vc["vc_status"]
+
+            # ✅ VC status is authoritative
+            p["oper_up"]  = (vc["vc_status"] == "Up")
+            p["admin_up"] = True
+
+            # 🔐 VC ports are non-configurable
+            p["bundle"]        = None
+            p["mode"]          = None
+            p["access_vlan"]   = None
+            p["trunk_vlans"]   = None
+            p["native_vlan"]   = None
+            p["configured"]    = False
+
+            continue  # 🚨 critical
+
+        # -------- NORMAL PORT --------
+        o = oper.get(name)
+        if o:
+            p["admin_up"] = o.get("admin_up")
+            p["oper_up"]  = o.get("oper_up")
+
+        p["vc_port"]   = False
+        p["vc_status"] = None
+
+    # -------------------------------------------------
+    # 2️⃣ ADD VC-ONLY PORTS (not in config)
+    # -------------------------------------------------
+    for vp in vc_ports:
+        name = vp["name"]
+        if name in cfg_map:
+            continue
+
+        # parse xe-<member>/<pic>/<port>
+        m = re.match(r'^(xe|ge)-(\d+)\/(\d+)\/(\d+)$', name)
+        if m:
+            scheme   = m.group(1)
+            member_i = int(m.group(2))
+            fpc_i    = int(m.group(3))
+            port_i   = int(m.group(4))
+        else:
+            scheme   = "xe"
+            member_i = 0
+            fpc_i    = 0
+            port_i   = 0
+
+        vc_up = (vp.get("vc_status") == "Up")
+
+        base = {
+            "name": name,
+            "member": member_i,
+            "fpc": fpc_i,
+            "type": scheme,
+            "aggregate": False,
+            "bundle": None,
+            "port": port_i,
+            "mode": None,
+            "access_vlan": None,
+            "trunk_vlans": None,
+            "native_vlan": None,
+            "poe": None,
+            "speed": None,
+            "duplex": None,
+            "admin_up": True,
+            "oper_up": vc_up,         # ✅ from VC
+            "configured": False,
+            "description": "VC Port",
+            "lacp_mode": None,
+            "vc_port": True,
+            "vc_status": vp.get("vc_status"),
+        }
+
+        cfg_ports.append(base)
+        cfg_map[name] = base
+
+    return cfg_ports
+
+def get_vlans(dev):
     with connect(dev) as m:
         try:
             criteria = etree.XML('<configuration><vlans/></configuration>')
@@ -170,8 +373,10 @@ def get_vlans(dev: Device):
                 vlans.append({'name': name, 'id': vid})
         return vlans
 
+def get_interface_live_raw(dev, if_name):
+    print("LIVE RPC:", if_name)
 
-def get_interface_live(dev: Device, if_name: str) -> Dict[str, Any]:
+    """Return detailed information for a single interface (talks to device)."""
     try:
         with connect(dev) as m:
             criteria = etree.XML(
@@ -194,8 +399,8 @@ def get_interface_live(dev: Device, if_name: str) -> Dict[str, Any]:
                 admin = admin_list[0].strip() if admin_list else None
                 oper_s = oper_list[0].strip() if oper_list else None
                 info.update({'admin_up': admin == 'up', 'oper_up': oper_s == 'up'})
-            # Mark configured: if we had a unit or it's an ae*
-            info['configured'] = info.get('configured', False) or info['type'] == 'ae'
+            # TODO: optionally gather byte counters via RPC <get-interface-statistics>
+            info['configured'] = info.get('configured', False) or info.get('type') == 'ae'
             return info
     except Exception:
         oper = get_operational(dev)
@@ -209,7 +414,195 @@ def get_interface_live(dev: Device, if_name: str) -> Dict[str, Any]:
         base['configured'] = False
         return base
 
+# ---- CACHED WRAPPERS ----
 
-def commit_changes(dev: Device, interfaces: List[str], cfg: Dict[str, Any]) -> Dict[str, Any]:
-    # Stub: return ok; wire actual commit later
-    return {'ok': True}
+def get_interfaces_cached(device: str, db):
+    row = (
+        db.query(InterfaceCache)
+          .filter(InterfaceCache.device == device)
+          .one_or_none()
+    )
+
+    if row:
+        return {
+            "timestamp": row.updated_at.isoformat(),
+            "interfaces": row.data
+        }
+
+    # fallback: live ophalen
+    interfaces = get_interfaces_live(device)
+    store_interfaces_cache(db, device, interfaces)
+
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "interfaces": interfaces
+    }
+
+def store_interfaces_cache(db, device: str, interfaces: list):
+    row = (
+        db.query(InterfaceCache)
+          .filter(InterfaceCache.device == device)
+          .one_or_none()
+    )
+
+    if not row:
+        row = InterfaceCache(device=device)
+        db.add(row)
+
+    row.data = interfaces
+    row.updated_at = datetime.utcnow()
+    db.commit()
+
+def get_interface_live_cached(dev_name, if_name):
+    """Return dict of single interface with very short TTL."""
+    
+    # 🚀 AE FAST PATH (no live rpc)
+    if if_name.startswith("ae"):
+        return get_ae_summary_cached(dev_name, if_name)
+
+    now = time.time()
+    key = (dev_name, if_name)
+    lock = _get_device_lock(dev_name)
+    with lock:
+        entry = _cache_live.get(key)
+        if entry and (now - entry["ts"] < INTERFACE_LIVE_TTL):
+            return entry["data"]
+        data = get_interface_live_raw(dev_name, if_name)
+        _cache_live[key] = {"ts": now, "data": data}
+        return data
+
+
+# Simple cache invalidation helper (call after commit)
+def invalidate_device_cache(dev_name):
+    with _CACHE_LOCK:
+        _cache_interfaces.pop(dev_name, None)
+        _cache_ae_keys = [k for k in _cache_ae if k[0] == dev_name]
+        for k in _cache_ae_keys:
+            _cache_ae.pop(k, None)
+        keys = [k for k in _cache_live.keys() if k[0] == dev_name]
+        for k in keys:
+            _cache_live.pop(k, None)
+
+# Example commit_changes placeholder (safe pattern: candidate + confirmed)
+def commit_changes(dev, interfaces, config):
+    """
+    Apply a config change using candidate + confirm pattern.
+    This function is intentionally conservative; adapt XML templates for your environment.
+    After successful commit or in any exception, it invalidates cache.
+    """
+    if isinstance(dev, str):
+        from .devices import get_device
+        dev = get_device(dev)
+    with connect(dev) as m:
+        m.lock('candidate')
+        try:
+            # Build your XML 'config' snippet here according to 'config' dict
+            # WARNING: modify appropriately for your production templates
+            template = '<configuration><interfaces/></configuration>'
+            m.edit_config(target='candidate', config=template)
+            # commit confirmed for safety
+            m.commit(confirm='30')
+            # final commit once validated
+            m.commit()
+        finally:
+            try:
+                m.unlock('candidate')
+            except Exception:
+                pass
+    # invalidate cache so frontend sees changes after commit
+    if isinstance(dev, dict):
+        devname = dev.get("name")
+    else:
+        # if dev is device dict without name, just clear all caches (safe)
+        devname = None
+    if devname:
+        invalidate_device_cache(devname)
+    else:
+        # best effort: clear whole cache
+        with _CACHE_LOCK:
+            _cache_interfaces.clear()
+            _cache_live.clear()
+
+def apply_interface_config(nc, interface: str, config: dict):
+    """
+    config example:
+    {
+      "mode": "access",
+      "access_vlan": 10
+    }
+    or
+    {
+      "mode": "trunk",
+      "trunk_vlans": [10,20,30],
+      "native_vlan": 1
+    }
+    """
+    if config.get("vc_port"):
+        raise ValueError("VC port configuration is not allowed")
+    if config["mode"] == "access":
+        nc.load_configuration(f"""
+        set interfaces {interface} unit 0 family ethernet-switching interface-mode access
+        set interfaces {interface} unit 0 family ethernet-switching vlan members {config["access_vlan"]}
+        """, format="set")
+
+    elif config["mode"] == "trunk":
+        cmds = [
+            f"set interfaces {interface} unit 0 family ethernet-switching interface-mode trunk",
+        ]
+        for v in config.get("trunk_vlans", []):
+            cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching vlan members {v}")
+
+        if config.get("native_vlan"):
+            cmds.append(
+                f"set interfaces {interface} native-vlan-id {config['native_vlan']}"
+            )
+
+        nc.load_configuration("\n".join(cmds), format="set")
+        
+def get_vc_ports_raw(dev):
+    """
+    Parse 'show virtual-chassis vc-port | display xml'
+    Return: [{"name": "xe-0/2/2", "vc_status": "Up"}, ...]
+    """
+    with connect(dev) as m:
+        rpc = etree.XML("""
+            <command format="xml">
+                show virtual-chassis vc-port
+            </command>
+        """)
+        res = m.rpc(rpc)
+        return parse_vc_ports_xml(res)
+
+def parse_vc_ports_xml(res):
+    ele = to_ele(res)
+    ports = []
+
+    for item in ele.xpath('.//*[local-name()="multi-routing-engine-item"]'):
+        # fpc number from <re-name>fpc0</re-name>
+        re_name = item.xpath('./*[local-name()="re-name"]/text()')
+        if not re_name:
+            continue
+
+        m = re.match(r'fpc(\d+)', re_name[0])
+        if not m:
+            continue
+        member = int(m.group(1))
+
+        # walk port-information entries
+        for p in item.xpath('.//*[local-name()="port-information"]'):
+            pname = p.xpath('./*[local-name()="port-name"]/text()')
+            status = p.xpath('./*[local-name()="port-status"]/text()')
+
+            if not pname:
+                continue
+
+            pic, port = pname[0].split('/')
+            iface = f"xe-{member}/{pic}/{port}"
+
+            ports.append({
+                "name": iface,
+                "vc_status": status[0] if status else None
+            })
+
+    return ports
+

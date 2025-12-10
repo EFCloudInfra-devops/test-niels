@@ -1,84 +1,182 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="nl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>EX4300 Port UI</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8" />
+  <title>EX4300 Manager</title>
+
+  <link rel="stylesheet" href="style.css" />
+  <script type="module" src="app.js"></script>
 </head>
 <body>
-  <header>
-    <h1>EX4300 Port UI</h1>
-    <div class="toolbar">
-      <label>Device:
-        <select id="deviceSelect"></select>
-      </label>
-      <button id="syncBtn">Sync actual</button>
-      <span id="lastRefresh" class="inline-badge" title="Last cache refresh">—</span>
-      <label>Polling (s): <input type="number" id="pollInput" min="15" value="60" /></label>
-    </div>
-  </header>
-  
-  <main id="pane" class="pane">
-    <div class="grid" id="grid-ge0"></div><br>
-    <div class="grid" id="grid-ge1"></div><br>
-    <div class="grid uplinks" id="grid-xe"></div><br>
-    <div class="grid aggregates" id="grid-ae"></div>
-  </main>
 
-  <div id="modal" class="modal hidden">
-    <div class="modal-content">
-      <span id="closeModal" class="close">×</span>
-      <h2 id="modalTitle">Port configuration</h2>
-      <div id="adminBadge" class="badge hidden">ADMIN DOWN</div>
-      <form id="configForm">
-        <div class="form-row">
-          <label>Mode</label>
-          <select name="mode" id="modeSelect">
-            <option value="access">access</option>
-            <option value="trunk">trunk</option>
-          </select>
-        </div>
-        <!-- Access VLAN: from backend /vlans -->
-        <div class="form-row access-only">
-          <label>Access VLAN</label>
-          <select name="access_vlan" id="accessVlanSelect"></select>
-        </div>
-        <!-- Trunk VLANs: multiselect -->
-        <div class="form-row trunk-only">
-          <label>Trunk VLANs</label>
-          <select name="trunk_vlans" id="trunkVlanSelect" multiple size="8"></select>
-        </div>
-        <!-- Show selected trunk VLANs inline -->
-        <div class="form-row trunk-only">
-          <label>Selected</label>
-          <div id="trunkSelected" class="multi-inline"></div>
-        </div>
-        <!-- Native VLAN -->
-        <div class="form-row trunk-only">
-          <label>Native VLAN</label>
-          <select name="native_vlan" id="nativeVlanSelect"></select>
-        </div>
-      
-        <div class="form-row">
-          <label>PoE</label>
-          <select name="poe">
-            <option value="">(laat onveranderd)</option>
-            <option value="true">aan</option>
-            <option value="false">uit</option>
-          </select>
-        </div>
-        
-        <div class="actions">
-          <button type="submit">Save</button>
-        </div>
-      </form>
-      <!-- AE bundle hint -->
-      <div id="bundleHint" class="hidden inline-badge"></div>
-      
+<!-- ================= HEADER ================= -->
+<header class="navbar">
+  <strong>EX4300 Manager</strong>
+
+  <nav class="nav-tabs">
+    <button id="tab-switch" class="active">Switch config</button>
+    <button id="tab-approvals">Approvals</button>
+  </nav>
+  </div>
+</header>
+
+<!-- ================= MAIN ================= -->
+<main>
+
+<!-- ===== SWITCH VIEW ===== -->
+<section id="view-switch">
+  <div class="toolbar">
+    <div class="left">
+      <span id="netconf-status" class="status-dot"></span>
+
+      <label for="switch-select">Switch</label>
+      <select id="switch-select"></select>
+
+      <button id="btn-retrieve" class="primary">
+        Retrieve config
+      </button>
     </div>
   </div>
+  
+  <div id="switch-grid-wrapper">
+    <div id="grid-overlay" class="hidden">
+      <div class="spinner"></div>
+      <div>Retrieving switch configuration…</div>
+      <div id="fetch-status" class="status loading">
+        ⏳ Ophalen van switch...
+      </div>
+    </div>
+  
+    <!-- MEMBER 0 -->
+    <div class="vc-member">
+      <div class="member-header">
+        Member 0
+      </div>
+    
+      <div class="member-faceplate">
+        <div class="ge-block">
+          <div id="m0-ge-top" class="ge-row"></div>
+          <div id="m0-ge-bottom" class="ge-row"></div>
+        </div>
+    
+        <div id="m0-xe" class="xe-row"></div>
+      </div>
+    </div>
+    
+    <!-- MEMBER 1 -->
+    <div class="vc-member">
+      <div class="member-header">
+        Member 1
+      </div>
+    
+      <div class="member-faceplate">
+        <div class="ge-block">
+          <div id="m1-ge-top" class="ge-row"></div>
+          <div id="m1-ge-bottom" class="ge-row"></div>
+        </div>
+    
+        <div id="m1-xe" class="xe-row"></div>
+      </div>
+    </div>
+  
+    <!-- AE -->
+    <h3>Aggregates (LACP)</h3>
+    <div id="grid-ae" class="ae-row"></div>
+  </div>
 
-  <script src="app.js"></script>
+  <div class="port-legend">
+    <div><span class="legend-box oper-up"></span> Oper up</div>
+    <div><span class="legend-box oper-down"></span> Oper down</div>
+    <div><span class="legend-box unconfigured"></span> Unconfigured</div>
+    <div><span class="legend-box pending"></span> Pending approval</div>
+    <div><span class="legend-box approved"></span> Approved</div>
+    <div><span class="legend-box lacp"></span> LACP bundle</div>
+  </div>
+</section>
+
+<!-- ===== APPROVALS VIEW ===== -->
+<!-- ===== APPROVALS VIEW ===== -->
+<section id="view-approvals" class="hidden">
+
+  <div class="container approvals">
+
+    <div class="approvals-header">
+      <h2>Pending change requests</h2>
+      <span class="approvals-count" id="approvals-count">0</span>
+    </div>
+
+    <div id="approvalsList" class="approvals-list"></div>
+
+    <div id="no-approvals" class="empty-state hidden">
+      ✅ No pending approvals
+    </div>
+
+  </div>
+
+</section>
+
+</main>
+
+<!-- ================= MODAL ================= -->
+<div id="modal" class="modal hidden">
+  <div class="modal-content">
+
+    <div class="modal-header">
+      <h3 id="modalTitle">Port</h3>
+    </div>
+
+    <div class="modal-body">
+    
+      <!-- INFO -->
+      <section class="modal-section">
+        <h4>Port info</h4>
+        <div id="portInfo"></div>
+      </section>
+    
+      <!-- CONFIG -->
+      <section class="modal-section">
+        <h4>Configuration</h4>
+    
+        <form id="configForm">
+          <label>Description</label>
+          <input id="ifDescr" />
+    
+          <label>Mode</label>
+          <select id="modeSelect">
+            <option value="access">Access</option>
+            <option value="trunk">Trunk</option>
+          </select>
+    
+          <div class="field" id="field-access">
+            <label>Access VLAN</label>
+            <select id="accessVlanSelect"></select>
+          </div>
+    
+          <div class="field" id="field-trunk">
+            <label>Trunk VLANs</label>
+            <select id="trunkVlanSelect" multiple></select>
+    
+            <label>Native VLAN</label>
+            <input id="nativeVlan" />
+          </div>
+    
+          <div class="modal-actions">
+            <button type="button" id="cancelModalBtn">Cancel</button>
+            <button type="submit" id="submitBtn" class="primary">Create request</button>
+          </div>
+        </form>
+      </section>
+    
+      <!-- DIFF -->
+      <section class="modal-section">
+        <h4>Diff</h4>
+        <pre class="diff-box" id="diffBox">No changes</pre>
+      </section>
+    
+    </div>
+  </div>
+</div>
+
+
 </body>
 </html>

@@ -1,33 +1,31 @@
-
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
+# models.py
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON
+from sqlalchemy import Enum as SAEnum
 from datetime import datetime
-import os
+from .database import Base
+import enum
 
-DB_PATH = os.getenv('DB_PATH', '/app/data/app.db')
-engine = create_engine(f'sqlite:///{DB_PATH}', echo=False, future=True)
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+class RequestStatus(enum.Enum):
+    pending = "pending"
+    approved = "approved"
+    rejected = "rejected"
 
-class AuditLog(Base):
-    __tablename__ = 'audit_logs'
-    id = Column(Integer, primary_key=True)
-    user = Column(String(128))
-    device = Column(String(128))
-    interfaces = Column(Text)
-    action = Column(Text)
-    result = Column(String(64))
-    diff = Column(Text)
+class ChangeRequest(Base):
+    __tablename__ = "change_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    device = Column(String(200), index=True, nullable=False)
+    interface = Column(String(200), nullable=False)
+    requester = Column(String(200), nullable=False)
+    config = Column(JSON, nullable=False)   # store the config payload as JSON
+    status = Column(SAEnum(RequestStatus), default=RequestStatus.pending, index=True)
+    approver = Column(String(200), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    comment = Column(Text, nullable=True)
 
-class ActualCache(Base):
-    __tablename__ = 'actual_cache'
-    id = Column(Integer, primary_key=True)
-    device = Column(String(128))
-    interface = Column(String(128))
-    payload = Column(Text)
-    refreshed_at = Column(DateTime, default=datetime.utcnow)
+class InterfaceCache(Base):
+    __tablename__ = "interface_cache"
 
-
-def init_db():
-    Base.metadata.create_all(engine)
+    device = Column(String, primary_key=True)
+    data = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)

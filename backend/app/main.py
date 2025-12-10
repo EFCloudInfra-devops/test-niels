@@ -1,206 +1,207 @@
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from .config import settings, Device
-from .schemas import InterfaceConfig, CommitRequest, ValidateResponse
-from .models import init_db, SessionLocal, ActualCache
-from .utils import validate_config
+# main.py
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.responses import JSONResponse
+from typing import Optional, List
+from .devices import load_devices, get_device
 from . import netconf
-from apscheduler.schedulers.background import BackgroundScheduler
-import json, re, logging
+from . import models, schemas
+from .database import SessionLocal, init_db
+from sqlalchemy.orm import Session
+import traceback
+import json
 from datetime import datetime
+from .models import InterfaceCache
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-log = logging.getLogger('ex4300-backend')
+app = FastAPI()
 
-app = FastAPI(title='EX4300 Port UI Backend', version='0.3.0')
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=['*'],
-    allow_credentials=False,
-    allow_methods=['*'],
-    allow_headers=['*'],
-)
-
+# Initialize DB (creates tables if not present)
 init_db()
 
-scheduler = BackgroundScheduler()
+# simple dependency: DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-GE_PAT = re.compile(r'^ge-\d+/0/\d+$')
-XE_PAT = re.compile(r'^xe-\d+/2/\d+$')
-AE_PAT = re.compile(r'^ae\d+$')
+# === Very simple "auth" dependency for demo ===
+# Expects headers: X-User, X-Role
+def get_current_user(x_user: Optional[str] = Header(None), x_role: Optional[str] = Header(None)):
+    """
+    Returns a dict with username & role. In production replace with real auth.
+    """
+    username = x_user or "anonymous"
+    role = x_role or "reader"
+    return {"username": username, "role": role}
 
-# helper to update meta row
-def _write_last_refresh(db: SessionLocal, dev: Device):
-    payload = json.dumps({'last_refresh': datetime.utcnow().isoformat()})
-    rec = db.query(ActualCache).filter_by(device=dev.name, interface='__meta__').first()
-    if rec:
-        rec.payload = payload
-        db.add(rec)
-    else:
-        db.add(ActualCache(device=dev.name, interface='__meta__', payload=payload))
+def require_role(allowed=("admin", "approver")):
+    def checker(user=Depends(get_current_user)):
+        if user["role"] not in allowed:
+            raise HTTPException(status_code=403, detail="Not allowed")
+        return user
+    return checker
+
+# --- existing endpoints ---
+@app.get("/api/inventory")
+def inventory():
+    devs = load_devices()
+    return [{"name": k, "mgmt": v.get("host")} for k,v in devs.items()]
+
+@app.get("/api/switches")
+def switches_list():
+    devs = load_devices()
+    return [{"name": k} for k in devs.keys()]
+
+@app.get("/api/switches/{device}/ping")
+def ping_device(device: str):
+    try:
+        dev = get_device(device)
+    except KeyError:
+        raise HTTPException(404, "Unknown device")
+    try:
+        with netconf.connect(dev):
+            return {"ok": True}
+    except Exception:
+        raise HTTPException(503, "NETCONF unreachable")
+
+@app.get("/api/switches/{device}/interfaces")
+def interfaces(device: str, db: Session = Depends(get_db)):
+    data = netconf.get_interfaces_cached(device, db)
+
+    return {
+        "device": device,
+        "source": "cache",
+        "retrieved_at": data["timestamp"],
+        "interfaces": data["interfaces"]
+    }
+
+@app.get("/api/switches/{device}/interface/{ifname}/live")
+def interface_live(device: str, ifname: str):
+    try:
+        return netconf.get_interface_live_cached(device, ifname)
+    except KeyError:
+        raise HTTPException(404, "Unknown device")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, str(e))
+
+@app.get("/api/switches/{device}/vlans")
+def vlans(device: str):
+    try:
+        return netconf.get_vlans(device)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, str(e))
+
+# === Change request endpoints ===
+
+@app.post("/api/requests", response_model=schemas.ChangeRequestOut, status_code=201)
+def create_request(req: schemas.ChangeRequestCreate, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    # persist request in DB
+    cr = models.ChangeRequest(
+        device=req.device,
+        interface=req.interface,
+        requester=req.requester or user.get("username"),
+        config=req.config,
+        status=models.RequestStatus.pending
+    )
+    db.add(cr)
+    db.commit()
+    db.refresh(cr)
+    return cr
+
+@app.get("/api/requests", response_model=List[schemas.ChangeRequestOut])
+def list_requests(status: Optional[str] = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    q = db.query(models.ChangeRequest)
+    if status:
+        q = q.filter(models.ChangeRequest.status == status)
+    # simple RBAC: non-approvers only see their own reqs
+    if user["role"] not in ("approver", "admin"):
+        q = q.filter(models.ChangeRequest.requester == user["username"])
+    items = q.order_by(models.ChangeRequest.created_at.desc()).all()
+    return items
+
+@app.post("/api/requests/{req_id}/approve", status_code=204)
+def approve_request(
+    req_id: int,
+    comment: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user = Depends(require_role(("admin", "approver")))
+):
+    req = db.query(models.ChangeRequest).get(req_id)
+    if not req:
+        raise HTTPException(404, "Request not found")
+    if req.status != models.RequestStatus.pending:
+        raise HTTPException(400, "Request not pending")
+
+    # ✅ mark approved BEFORE apply
+    req.status = models.RequestStatus.approved
+    req.approver = user["username"]
+    if comment:
+        req.comment = comment
     db.commit()
 
-
-def device_by_name(name: str) -> Device:
-    for d in settings.devices:
-        if d.name == name:
-            return d
-    raise KeyError('device not found')
-
-
-def refresh_actual_cache(dev: Device):
+    # 🔐 safe NETCONF apply
     try:
-        cfg_ele = netconf.get_configuration(dev)
-        parsed = netconf.parse_interfaces_config(cfg_ele)
+        device = get_device(req.device)
+
+        with netconf.connect(device, candidate=True) as nc:
+            netconf.apply_interface_config(
+                nc,
+                interface=req.interface,
+                config=req.config
+            )
+
+            nc.commit()   # ✅ DIT IS DE FIX
+
+
     except Exception as e:
-        log.error(f"Config read failed for {dev.name}: {e}")
-        parsed = []
-    try:
-        oper = netconf.get_operational(dev)
-    except Exception as e:
-        log.error(f"Oper read failed for {dev.name}: {e}")
-        oper = {}
-
-    by_name = {p['name']: p for p in parsed}
-
-    for iname, o in oper.items():
-        if iname not in by_name and (GE_PAT.match(iname) or XE_PAT.match(iname) or AE_PAT.match(iname)):
-            try:
-                scheme = 'ae' if iname.startswith('ae') else iname.split('-', 1)[0]
-                by_name[iname] = {
-                    'name': iname, 'member': 0, 'fpc': 0, 'type': scheme,
-                    'aggregate': scheme == 'ae', 'bundle': None,
-                    'port': 0, 'mode': 'access', 'access_vlan': None, 'trunk_vlans': None,
-                    'native_vlan': None, 'poe': None, 'speed': None, 'duplex': None,
-                    'admin_up': o.get('admin_up', False), 'oper_up': o.get('oper_up', False),
-                    'configured': False, 'description': None
-                }
-            except Exception:
-                pass
-        elif iname in by_name:
-            by_name[iname].update(o)
-
-    merged = list(by_name.values())
-
-    db = SessionLocal()
-    try:
-        for p in merged:
-            rec = db.query(ActualCache).filter_by(device=dev.name, interface=p['name']).first()
-            payload = json.dumps(p)
-            if rec:
-                rec.payload = payload
-                db.add(rec)
-            else:
-                db.add(ActualCache(device=dev.name, interface=p['name'], payload=payload))
+        req.status = "failed"
+        req.comment = f"Apply failed: {e}"
         db.commit()
-        _write_last_refresh(db, dev)             # <-- add this
-        log.info(f"Actual cache refreshed: {dev.name} ({len(merged)} interfaces)")
-    finally:
-        db.close()
+        raise HTTPException(500, f"NETCONF apply failed: {e}")
 
-# Warm cache on startup (so UI sees cached immediately)
-@app.on_event('startup')
-def warm_cache_on_startup():
-    for dev in settings.devices:
-        try:
-            refresh_actual_cache(dev)
-        except Exception as e:
-            log.error(f"Warm cache failed for {dev.name}: {e}")
+    db.refresh(req)
+    return req
 
-# Schedule periodic refresh
-for dev in settings.devices:
-    scheduler.add_job(lambda d=dev: refresh_actual_cache(d), 'interval', seconds=settings.sync_interval_seconds, id=f'actual_sync_{dev.name}', replace_existing=True)
 
-scheduler.start()
+@app.post("/api/requests/{req_id}/reject")
+def reject_request(
+    req_id: int,
+    comment: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user = Depends(require_role(("admin", "approver")))
+):
+    item = db.query(models.ChangeRequest).get(req_id)
+    if not item:
+        raise HTTPException(404, "Request not found")
 
-@app.get('/api/health')
-def health():
-    return {'ok': True}
+    if item.status != models.RequestStatus.pending:
+        raise HTTPException(400, "Request not pending")
 
-@app.get('/api/inventory')
-def inventory():
-    return [d.model_dump() for d in settings.devices]
+    item.status = models.RequestStatus.rejected
+    item.approver = user["username"]
+    if comment:
+        item.comment = comment
 
-@app.get('/api/switches/{device}/interfaces')
-def list_interfaces(device: str):
-    try:
-        dev = device_by_name(device)
-    except KeyError:
-        raise HTTPException(404, 'Unknown device')
-    db = SessionLocal()
-    try:
-        rows = db.query(ActualCache).filter_by(device=device).all()
-        return [json.loads(r.payload) for r in rows]
-    finally:
-        db.close()
+    db.commit()
+    db.refresh(item)
+    return item
 
-# LIVE first
-@app.get('/api/switches/{device}/interface/{ifname:path}/live')
-def get_interface_live(device: str, ifname: str):
-    try:
-        dev = device_by_name(device)
-    except KeyError:
-        raise HTTPException(404, 'Unknown device')
-    try:
-        info = netconf.get_interface_live(dev, ifname)
-        return info
-    except Exception as e:
-        raise HTTPException(500, f'live read failed: {e}')
+@app.post("/api/switches/{device}/interfaces/retrieve")
+def interfaces_retrieve(device: str, db: Session = Depends(get_db)):
+    interfaces = netconf.get_interfaces_live(device)
 
-@app.get('/api/devices/{device}/vlans')
-def get_vlans(device: str):
-    try:
-        dev = device_by_name(device)
-    except KeyError:
-        raise HTTPException(404, 'Unknown device')
-    try:
-        return netconf.get_vlans(dev)
-    except Exception as e:
-        raise HTTPException(500, f'vlan read failed: {e}')
+    netconf.store_interfaces_cache(
+        db,
+        device=device,
+        interfaces=interfaces
+    )
 
-@app.post('/api/sync/{device}')
-def sync_now(device: str):
-    try:
-        dev = device_by_name(device)
-    except KeyError:
-        raise HTTPException(404, 'Unknown device')
-    refresh_actual_cache(dev)
-    return {'ok': True}
-
-@app.post('/api/validate', response_model=ValidateResponse)
-def validate(config: InterfaceConfig):
-    errors = validate_config(config)
-    return ValidateResponse(ok=(len(errors)==0), errors=errors)
-
-@app.post('/api/commit')
-def commit(req: CommitRequest):
-    try:
-        dev = device_by_name(req.device)
-    except KeyError:
-        raise HTTPException(404, 'Unknown device')
-    errors = validate_config(req.config)
-    if errors:
-        raise HTTPException(400, detail=errors)
-    try:
-        res = netconf.commit_changes(dev, req.interfaces, req.config.model_dump())
-        return res
-    except Exception as e:
-        raise HTTPException(500, f'commit failed: {e}')
-
-# endpoint to read last refresh
-@app.get('/api/last-refresh/{device}')
-def last_refresh(device: str):
-    try:
-        dev = device_by_name(device)
-    except KeyError:
-        raise HTTPException(404, 'Unknown device')
-    db = SessionLocal()
-    try:
-        rec = db.query(ActualCache).filter_by(device=dev.name, interface='__meta__').first()
-        if rec:
-            payload = json.loads(rec.payload)
-            return {'last_refresh': payload.get('last_refresh')}
-        return {'last_refresh': None}
-    finally:
-        db.close()
+    return {
+        "device": device,
+        "source": "live",
+        "retrieved_at": datetime.utcnow().isoformat(),
+        "interfaces": interfaces
+    }

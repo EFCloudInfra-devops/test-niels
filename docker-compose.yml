@@ -1,18 +1,22 @@
+version: '3.8'
 services:
   backend:
     build: ./backend
-    container_name: ex4300-backend
-    ports:
-      - "8000:8000"
-    env_file:
-      - backend/.env
+    container_name: manager-backend
+    expose:
+      - "8000"
     volumes:
-      - ./backend/data:/app/data
-      - ./backend/inventory.json:/app/inventory.json:ro
+      - ./backend/data:/app/backend/data
+      - ./backend/app:/app/app
+    environment:
+      - NETCONF_DEVICES_JSON=/app/backend/data/devices.json
+    restart: unless-stopped
+
   frontend:
     build: ./frontend
-    container_name: ex4300-frontend
+    container_name: manager-frontend
     ports:
       - "8081:80"
     depends_on:
       - backend
+    restart: unless-stopped
