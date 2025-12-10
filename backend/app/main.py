@@ -5,12 +5,13 @@ from typing import Optional, List
 from .devices import load_devices, get_device
 from . import netconf
 from . import models, schemas
-from .database import SessionLocal, init_db
+from .database import SessionLocal, init_db, Base, engine
 from sqlalchemy.orm import Session
 import traceback
 import json
 from datetime import datetime
-from .models import InterfaceCache
+from .models import InterfaceCache, Vlan, CachedVlan
+
 
 app = FastAPI()
 
@@ -71,7 +72,7 @@ def interfaces(device: str, db: Session = Depends(get_db)):
 
     return {
         "device": device,
-        "source": "cache",
+        "source": data.get("source", "cache"),
         "retrieved_at": data["timestamp"],
         "interfaces": data["interfaces"]
     }
@@ -87,12 +88,27 @@ def interface_live(device: str, ifname: str):
         raise HTTPException(500, str(e))
 
 @app.get("/api/switches/{device}/vlans")
-def vlans(device: str):
-    try:
-        return netconf.get_vlans(device)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
+def get_cached_vlans(device: str, db: Session = Depends(get_db)):
+
+    row = (
+        db.query(CachedVlan)
+        .filter(CachedVlan.device == device)
+        .one_or_none()
+    )
+
+    if not row:
+        return {
+            "device": device,
+            "vlans": [],
+            "cached": False
+        }
+
+    return {
+        "device": device,
+        "vlans": row.data,
+        "cached": True,
+        "updated_at": row.updated_at
+    }
 
 # === Change request endpoints ===
 
@@ -122,7 +138,7 @@ def list_requests(status: Optional[str] = None, db: Session = Depends(get_db), u
     items = q.order_by(models.ChangeRequest.created_at.desc()).all()
     return items
 
-@app.post("/api/requests/{req_id}/approve", status_code=204)
+@app.post("/api/requests/{req_id}/approve", status_code=200)
 def approve_request(
     req_id: int,
     comment: Optional[str] = None,
@@ -140,20 +156,21 @@ def approve_request(
     req.approver = user["username"]
     if comment:
         req.comment = comment
+
     db.commit()
 
     # 🔐 safe NETCONF apply
     try:
-        device = get_device(req.device)
+        device_info = get_device(req.device)
 
-        with netconf.connect(device, candidate=True) as nc:
+        with netconf.connect(device_info) as nc:
             netconf.apply_interface_config(
                 nc,
                 interface=req.interface,
                 config=req.config
             )
 
-            nc.commit()   # ✅ DIT IS DE FIX
+            # nc.commit()   # ✅ DIT IS DE FIX
 
 
     except Exception as e:
@@ -191,7 +208,7 @@ def reject_request(
 
 @app.post("/api/switches/{device}/interfaces/retrieve")
 def interfaces_retrieve(device: str, db: Session = Depends(get_db)):
-    interfaces = netconf.get_interfaces_live(device)
+    interfaces = netconf.get_interfaces_raw(device)
 
     netconf.store_interfaces_cache(
         db,
@@ -204,4 +221,25 @@ def interfaces_retrieve(device: str, db: Session = Depends(get_db)):
         "source": "live",
         "retrieved_at": datetime.utcnow().isoformat(),
         "interfaces": interfaces
+    }
+
+@app.post("/api/switches/{device}/vlans/refresh")
+def refresh_vlans(device: str, db: Session = Depends(get_db),
+                  user=Depends(require_role(("admin","approver")))):
+
+    vlans = netconf.get_vlans(device)
+
+    db.merge(
+        CachedVlan(
+            device=device,
+            data=vlans,
+            updated_at=datetime.utcnow()
+        )
+    )
+    db.commit()
+
+    return {
+        "device": device,
+        "count": len(vlans),
+        "status": "refreshed"
     }

@@ -99,7 +99,7 @@ async function loadSwitches() {
     const list = await res.json();
     const sel = document.getElementById("switch-select");
     if (!sel) return;
-    sel.innerHTML = `<option value="">-- select switch --</option>`;
+    sel.innerHTML = "";
     list.forEach(s => {
       const o = document.createElement("option");
       o.value = s.name;
@@ -112,22 +112,12 @@ async function loadSwitches() {
     sel.addEventListener("change", async (e) => {
       currentSwitch = e.target.value;
       window.currentSwitch = currentSwitch;
-    
+      // reload vlans for UI (if VLAN picker present)
       await loadVlanList();
-    
-      // ✅ ALWAYS load cached interfaces first
-      setFetchStatus("Loading cached config…", "loading");
-      const r = await fetch(`/api/switches/${currentSwitch}/interfaces`);
-      if (r.ok) {
-        const data = await r.json();
-        mergeAndRedrawPorts(currentSwitch, data);
-        setFetchStatus("Cached config loaded", "ok");
-      } else {
-        setFetchStatus("Failed to load cache", "error");
-      }
-    });    
+      await reloadAllPorts();
+    });
     // first time load VLANs
-    // await loadVlanList();
+    await loadVlanList();
   } catch (e) {
     console.error("loadSwitches", e);
   }
@@ -141,20 +131,8 @@ async function loadVlanList() {
   try {
     const r = await fetch(`/api/switches/${currentSwitch}/vlans`);
     if (!r.ok) return;
-
-    const raw = await r.json();
-
-    if (Array.isArray(raw)) {
-      _vlans_cache = raw;
-    } else if (raw?.data && typeof raw.data === "object") {
-      _vlans_cache = Object.entries(raw.data).map(([name, v]) => ({
-        name,
-        id: v.vlan_id ?? v.id ?? null
-      }));
-    } else {
-      _vlans_cache = [];
-    }
-
+    _vlans_cache = await r.json(); // expected [{name, id}, ...]
+    // render VLAN picker if exists
     const vlanSel = document.getElementById("vlan-select");
     if (vlanSel) {
       vlanSel.innerHTML = `<option value="">-- highlight VLAN --</option>`;
@@ -684,36 +662,36 @@ function allAggregatePorts(max = 8) {
 function mergeAndRedrawPorts(device, dataOrArray) {
   CURRENT_DEVICE = device;
 
-  // -------- normalize input --------
-  let incoming = [];
+  // Normalize input: accept either an array of ports or an object { interfaces: [...] } (or { data: [...] })
+  let portsArray = [];
   if (Array.isArray(dataOrArray)) {
-    incoming = dataOrArray;
-  } else if (dataOrArray?.interfaces) {
-    incoming = dataOrArray.interfaces;
-  } else if (dataOrArray?.data) {
-    incoming = dataOrArray.data;
+    portsArray = dataOrArray;
+  } else if (dataOrArray && (Array.isArray(dataOrArray.interfaces) || Array.isArray(dataOrArray.data))) {
+    portsArray = dataOrArray.interfaces || dataOrArray.data;
+  } else {
+    portsArray = [];
   }
 
-  incoming = incoming.filter(p => p?.name);
+  // defensive: ensure each entry has { name }
+  portsArray = portsArray.filter(p => p && p.name);
 
-  // -------- build deterministic skeleton --------
+  // build base hardware map (GE + XE + AE placeholders)
   const map = {};
-
-  // GE (48 per member)
-  [0, 1].forEach(member => {
+  // GE ports (48 per member)
+  [0, 1].forEach(m => {
     for (let i = 0; i < 48; i++) {
-      const name = `ge-${member}/0/${i}`;
+      const name = `ge-${m}/0/${i}`;
       map[name] = {
         name,
         type: "ge",
-        member,
+        member: m,
         port: i,
         configured: false,
         oper_up: false,
         admin_up: false,
-        bundle: null,
         access_vlan: null,
         trunk_vlans: [],
+        bundle: null,
         vc_port: false,
         pending: false,
         _source: "skeleton"
@@ -721,14 +699,14 @@ function mergeAndRedrawPorts(device, dataOrArray) {
     }
   });
 
-  // XE (uplinks)
-  [0, 1].forEach(member => {
+  // XE uplinks (4 per member)
+  [0, 1].forEach(m => {
     for (let i = 0; i < 4; i++) {
-      const name = `xe-${member}/2/${i}`;
+      const name = `xe-${m}/2/${i}`;
       map[name] = {
         name,
         type: "xe",
-        member,
+        member: m,
         port: i,
         configured: false,
         oper_up: false,
@@ -740,39 +718,37 @@ function mergeAndRedrawPorts(device, dataOrArray) {
     }
   });
 
-  // AE placeholders (stabiel, max 8)
+  // Optionally ensure AE placeholders exist (so AE area is stable)
   for (let i = 0; i < 8; i++) {
     const name = `ae${i}`;
-    map[name] = {
-      name,
-      type: "ae",
-      configured: false,
-      oper_up: false,
-      members: [],
-      _source: "skeleton"
-    };
+    if (!map[name]) {
+      map[name] = { name, type: "ae", configured: false, oper_up: false, members: [], _source: "skeleton" };
+    }
   }
 
-  // -------- overlay real data --------
-  incoming.forEach(p => {
-    const base = map[p.name] || {};
-    map[p.name] = {
+  // Overlay incoming port data (portsArray). Ports coming from cache or live may already contain _source.
+  portsArray.forEach(p => {
+    const key = p.name;
+    const base = map[key] || {};
+    map[key] = {
       ...base,
       ...p,
-      _source: p._source || "live",
-      pending: !!pendingByInterface[`${device}|${p.name}`]
+      _source: p._source || base._source || "live",
+      pending: p.pending ?? base.pending ?? !!pendingByInterface[`${device}|${key}`],
+      configured: p.configured ?? base.configured ?? false
     };
   });
 
-  // -------- final render list --------
-  const renderPorts = Object.values(map)
-    .filter(Boolean)
-    .sort(portCompare);
+  // Build final render array (exclude undefined entries) and sort deterministically
+  const renderPorts = Object.values(map).filter(Boolean).sort(portCompare);
 
+  // Save central render state for redraws on tab-switch
   CURRENT_SWITCH_PORTS = renderPorts;
 
+  // Finally render via canonical path
   drawPorts(renderPorts, device);
 }
+
 
 async function loadPending() {
   const r = await fetch("/api/requests?status=pending");
@@ -901,6 +877,22 @@ async function loadVlanCacheStatus(device) {
     console.warn("No VLAN cache");
   }
 }
+
+document.getElementById("btn-retrieve-cached").onclick = async () => {
+  if (!currentSwitch) return;
+  // load cached interfaces (GET)
+  try {
+    setFetchStatus("Loading cached config...", "loading");
+    const r = await fetch(`/api/switches/${currentSwitch}/interfaces`);
+    if (!r.ok) throw new Error("cached fetch failed");
+    const data = await r.json();
+    mergeAndRedrawPorts(currentSwitch, data.interfaces || data);
+    setFetchStatus("Cached config loaded", "ok");
+  } catch (e) {
+    console.error(e);
+    setFetchStatus("Failed to load cached config", "error");
+  }
+};
 
 document.getElementById("btn-refresh-interfaces").onclick = async () => {
   if (!currentSwitch) return;

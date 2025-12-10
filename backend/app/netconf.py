@@ -24,8 +24,13 @@ _CACHE_VC = {}       # device -> { ts, data }
 INTERFACES_TTL = float(os.getenv("INTERFACES_TTL", "5"))   # small TTL
 INTERFACE_LIVE_TTL = float(os.getenv("INTERFACE_LIVE_TTL", "3"))
 AE_TTL = float(os.getenv("AE_TTL", "15"))
-_CACHE_VC = {}       # device -> { ts, data }
 
+def fetch_interfaces(device):
+    """
+    Public wrapper used by jobs — returns a list of interfaces.
+    """
+    # use the existing "get_interfaces_raw" which returns a list (config+oper)
+    return get_interfaces_raw(device)
 
 def _get_device_lock(dev_name):
     with _CACHE_LOCK:
@@ -353,6 +358,49 @@ def get_interfaces_raw(dev):
         cfg_ports.append(base)
         cfg_map[name] = base
 
+        # -------------------------------------------------
+        # 3️⃣ ADD UNCONFIGURED BUT OPERATIONAL PORTS
+        # -------------------------------------------------
+        for ifname, o in oper.items():
+            if ifname in cfg_map:
+                continue
+
+            m = re.match(r'^(ge|xe)-(\d+)\/(\d+)\/(\d+)$', ifname)
+            if m:
+                scheme   = m.group(1)
+                member_i = int(m.group(2))
+                fpc_i    = int(m.group(3))
+                port_i   = int(m.group(4))
+            else:
+                continue
+
+            base = {
+                "name": ifname,
+                "member": member_i,
+                "fpc": fpc_i,
+                "type": scheme,
+                "aggregate": False,
+                "bundle": None,
+                "port": port_i,
+                "mode": None,
+                "access_vlan": None,
+                "trunk_vlans": None,
+                "native_vlan": None,
+                "poe": None,
+                "speed": None,
+                "duplex": None,
+                "admin_up": o.get("admin_up"),
+                "oper_up": o.get("oper_up"),
+                "configured": False,
+                "description": None,
+                "lacp_mode": None,
+                "vc_port": False,
+                "vc_status": None,
+            }
+
+            cfg_ports.append(base)
+            cfg_map[ifname] = base
+
     return cfg_ports
 
 def get_vlans(dev):
@@ -430,12 +478,13 @@ def get_interfaces_cached(device: str, db):
         }
 
     # fallback: live ophalen
-    interfaces = get_interfaces_live(device)
+    interfaces = get_interfaces_raw(device)
     store_interfaces_cache(db, device, interfaces)
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
-        "interfaces": interfaces
+        "interfaces": interfaces,
+        "source": "cache"  # of "live"
     }
 
 def store_interfaces_cache(db, device: str, interfaces: list):
@@ -523,41 +572,51 @@ def commit_changes(dev, interfaces, config):
             _cache_interfaces.clear()
             _cache_live.clear()
 
-def apply_interface_config(nc, interface: str, config: dict):
+def apply_interface_config(mgr, interface: str, config: dict):
     """
-    config example:
-    {
-      "mode": "access",
-      "access_vlan": 10
-    }
-    or
-    {
-      "mode": "trunk",
-      "trunk_vlans": [10,20,30],
-      "native_vlan": 1
-    }
+    Apply config using candidate pattern against an ncclient manager.Manager instance.
+    mgr: ncclient.manager.Manager
+    interface: name (e.g. ge-0/0/1)
+    config: dict like { mode: "access", access_vlan: "v200" } or trunk config
     """
     if config.get("vc_port"):
         raise ValueError("VC port configuration is not allowed")
-    if config["mode"] == "access":
-        nc.load_configuration(f"""
-        set interfaces {interface} unit 0 family ethernet-switching interface-mode access
-        set interfaces {interface} unit 0 family ethernet-switching vlan members {config["access_vlan"]}
-        """, format="set")
 
+    # build set commands
+    cmds = []
+    if config["mode"] == "access":
+        cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching interface-mode access")
+        if config.get("access_vlan"):
+            cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching vlan members {config['access_vlan']}")
     elif config["mode"] == "trunk":
-        cmds = [
-            f"set interfaces {interface} unit 0 family ethernet-switching interface-mode trunk",
-        ]
+        cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching interface-mode trunk")
         for v in config.get("trunk_vlans", []):
             cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching vlan members {v}")
-
         if config.get("native_vlan"):
-            cmds.append(
-                f"set interfaces {interface} native-vlan-id {config['native_vlan']}"
-            )
+            cmds.append(f"set interfaces {interface} native-vlan-id {config['native_vlan']}")
 
-        nc.load_configuration("\n".join(cmds), format="set")
+    if not cmds:
+        raise ValueError("No configuration commands generated")
+
+    # candidate pattern: lock candidate, edit_config target=candidate, commit confirm+final
+    try:
+        mgr.lock('candidate')
+    except Exception:
+        # best-effort continue (some devices may not support candidate)
+        pass
+
+    try:
+        set_cfg = "\n".join(cmds)
+        # use edit-config on candidate
+        mgr.edit_config(target='candidate', config=f"<configuration>\n{set_cfg}\n</configuration>", default_operation='merge')
+        # commit confirmed then final commit
+        mgr.commit(confirm='30')
+        mgr.commit()
+    finally:
+        try:
+            mgr.unlock('candidate')
+        except Exception:
+            pass
         
 def get_vc_ports_raw(dev):
     """

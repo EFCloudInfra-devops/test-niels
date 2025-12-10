@@ -26,15 +26,19 @@
 <!-- ===== SWITCH VIEW ===== -->
 <section id="view-switch">
   <div class="toolbar">
-    <div class="left">
-      <span id="netconf-status" class="status-dot"></span>
 
-      <label for="switch-select">Switch</label>
-      <select id="switch-select"></select>
+    <label for="switch-select">Switch</label>
+    <select id="switch-select"></select>
 
-      <button id="btn-retrieve" class="primary">
-        Retrieve config
-      </button>
+    <div class="switch-controls">
+      <div class="left">
+        <button id="btn-refresh-interfaces">Refresh interfaces</button>
+      </div>
+    
+      <div class="right">
+        <button id="btn-refresh-vlans">Refresh VLANs</button>
+        <span id="vlan-cache-status" class="hidden"></span>
+      </div>
     </div>
   </div>
   
@@ -46,7 +50,8 @@
         ⏳ Ophalen van switch...
       </div>
     </div>
-  
+    
+
     <!-- MEMBER 0 -->
     <div class="vc-member">
       <div class="member-header">

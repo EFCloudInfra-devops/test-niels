@@ -3,7 +3,7 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DB_PATH = os.getenv("APP_DB_PATH", "/app/data/app.db")
+DB_PATH = os.getenv("APP_DB_PATH", "/app/backend/data/app.db")
 # sqlite connection string
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
 

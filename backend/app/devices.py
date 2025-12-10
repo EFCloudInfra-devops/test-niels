@@ -1,7 +1,7 @@
 # /app/backend/app/devices.py
 import os, json
 
-DEVICES_JSON = os.getenv("NETCONF_DEVICES_JSON", "/app/devices.json")
+DEVICES_JSON = os.getenv("NETCONF_DEVICES_JSON", "/app/data/devices.json")
 
 def load_devices() -> dict:
     """
@@ -22,3 +22,13 @@ def get_device(name: str) -> dict:
     if name not in devs:
         raise KeyError(f"Unknown device: {name}")
     return devs[name]
+
+def get_devices() -> list[dict]:
+    """
+    Return list of device dicts WITH name included
+    """
+    devs = load_devices()
+    return [
+        {"name": name, **cfg}
+        for name, cfg in devs.items()
+    ]

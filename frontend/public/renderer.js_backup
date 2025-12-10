@@ -6,17 +6,6 @@ const CLIENT_LIVE_TTL = 10 * 1000; // 10s
 let activeTooltip = null;
 let globalTooltip = null;
 
-/* =========================================
-   New: global registries to prevent duplication
-   - AE_REGISTRY prevents AE being appended repeatedly across redraws
-   - VC_LINK_REGISTRY reserved for future VC visual elements (keeps parity)
-   - RENDER_DEVICE tracks which device the registries belong to
-========================================= */
-const AE_REGISTRY = new Set();         // keys: `${device}|aeX`
-const VC_LINK_REGISTRY = new Set();    // keys: `${device}|${member}|${fpc}|${port}`
-let RENDER_DEVICE = null;
-// ========================================
-
 // ---------- helpers ----------
 function getTooltip() {
   if (!globalTooltip) {
@@ -203,14 +192,6 @@ function portTile(port, device) {
 // ---------- main renderer ----------
 export function drawPorts(ports, device) {
 
-  // If the device changed, reset the registries — otherwise keep them
-  if (device !== RENDER_DEVICE) {
-    AE_REGISTRY.clear();
-    VC_LINK_REGISTRY.clear();
-    RENDER_DEVICE = device;
-    // console.debug("Renderer: cleared AE/VC registries for device:", device);
-  }
-
   const grids = {
     m0: {
       geTop: document.getElementById("m0-ge-top"),
@@ -225,13 +206,12 @@ export function drawPorts(ports, device) {
     ae: document.getElementById("grid-ae")
   };
 
-  // ✅ HARD RESET – voorkomt stale DOM fragments (we explicitly keep registries)
+  // ✅ HARD RESET – voorkomt AE duplicatie
   Object.values(grids).forEach(g => {
     if (!g) return;
     Object.values(g).forEach(el => el && (el.innerHTML = ""));
   });
 
-  // local set to prevent duplicates within a single draw
   const renderedAE = new Set();
 
   ports.forEach(port => {
@@ -250,23 +230,7 @@ export function drawPorts(ports, device) {
     }
 
     else if (info.type === "ae" && port.configured) {
-      // Multi-level guard: (1) per-draw (renderedAE), (2) persistent per-device (AE_REGISTRY)
-      const deviceKey = `${device}|${port.name}`;
-
-      if (renderedAE.has(port.name)) {
-        return;
-      }
-
-      if (AE_REGISTRY.has(deviceKey)) {
-        // Already rendered in a previous draw for this device — skip append.
-        // This prevents duplicates increasing when drawPorts is called multiple times without device change.
-        // Note: we still mark as rendered in this draw to avoid re-checking
-        renderedAE.add(port.name);
-        return;
-      }
-
-      // Not yet rendered — register and append
-      AE_REGISTRY.add(deviceKey);
+      if (renderedAE.has(port.name)) return;
       renderedAE.add(port.name);
       grids.ae?.appendChild(portTile(port, device));
     }

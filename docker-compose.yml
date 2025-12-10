@@ -2,6 +2,7 @@ version: '3.8'
 services:
   backend:
     build: ./backend
+    image: manager-backend      # ✅ dit toevoegen
     container_name: manager-backend
     expose:
       - "8000"
@@ -20,3 +21,12 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+      
+  # nightly-refresh:
+  #   container_name: nightly-refresh
+  #   image: manager-backend
+  #   command: python -m app.jobs.nightly_refresh
+  #   volumes:
+  #     - ./backend/data:/app/backend/data
+  #   restart: "no"
+

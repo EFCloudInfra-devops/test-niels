@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from datetime import datetime
 from .database import Base
@@ -29,3 +29,33 @@ class InterfaceCache(Base):
     device = Column(String, primary_key=True)
     data = Column(JSON, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow)
+    
+class Vlan(Base):
+    __tablename__ = "vlans"
+
+    id = Column(Integer, primary_key=True)
+    device = Column(String, index=True)
+    vlan_id = Column(Integer)
+    name = Column(String)
+    fetched_at = Column(DateTime)
+
+class CachedInterface(Base):
+    __tablename__ = "cached_interfaces"
+
+    device = Column(String, primary_key=True)
+    name = Column(String, primary_key=True)
+    data = Column(JSON)
+    fetched_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+class CachedVlan(Base):
+    __tablename__ = "vlan_cache"
+
+    device = Column(String, primary_key=True)
+    # vlan_id = Column(String, primary_key=True)  # string → supports “1”, “100-110”
+    data = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # __table_args__ = (
+    #     UniqueConstraint("device", "vlan_id", name="uix_device_vlan"),
+    # )
