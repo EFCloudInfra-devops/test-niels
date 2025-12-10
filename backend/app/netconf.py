@@ -472,35 +472,45 @@ def get_interfaces_cached(device: str, db):
     )
 
     if row:
+        interfaces = row.data or []
+
+        # ✅ NORMALISEER ouwe records
+        for i in interfaces:
+            i.setdefault("_source", "cache")
+
         return {
             "timestamp": row.updated_at.isoformat(),
-            "interfaces": row.data
+            "interfaces": interfaces,
+            "source": "cache"
         }
 
-    # fallback: live ophalen
+    # fallback live
     interfaces = get_interfaces_raw(device)
+    for i in interfaces:
+        i["_source"] = "live"
+
     store_interfaces_cache(db, device, interfaces)
 
     return {
         "timestamp": datetime.utcnow().isoformat(),
         "interfaces": interfaces,
-        "source": "cache"  # of "live"
+        "source": "live"
     }
+def store_interfaces_cache(db, device: str, interfaces: list[dict]):
+    """
+    Overwrite interface cache for a device with fresh live data.
+    This is the single source of truth after retrieve.
+    """
 
-def store_interfaces_cache(db, device: str, interfaces: list):
-    row = (
-        db.query(InterfaceCache)
-          .filter(InterfaceCache.device == device)
-          .one_or_none()
+    db.merge(
+        InterfaceCache(
+            device=device,
+            data=interfaces,
+            updated_at=datetime.utcnow()
+        )
     )
-
-    if not row:
-        row = InterfaceCache(device=device)
-        db.add(row)
-
-    row.data = interfaces
-    row.updated_at = datetime.utcnow()
     db.commit()
+
 
 def get_interface_live_cached(dev_name, if_name):
     """Return dict of single interface with very short TTL."""

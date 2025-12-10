@@ -3,18 +3,17 @@
 
 const _client_live_cache = {}; // key: device|ifname -> {ts, data}
 const CLIENT_LIVE_TTL = 10 * 1000; // 10s
-let activeTooltip = null;
+// let activeTooltip = null;
 let globalTooltip = null;
 
 /* =========================================
    New: global registries to prevent duplication
-   - AE_REGISTRY prevents AE being appended repeatedly across redraws
-   - VC_LINK_REGISTRY reserved for future VC visual elements (keeps parity)
-   - RENDER_DEVICE tracks which device the registries belong to
 ========================================= */
-const AE_REGISTRY = new Set();         // keys: `${device}|aeX`
-const VC_LINK_REGISTRY = new Set();    // keys: `${device}|${member}|${fpc}|${port}`
+const PORT_DOM = new Map(); // ifname → DOM element
+// ✅ debug expose (alleen voor debugging)
+window.__PORT_DOM__ = PORT_DOM;
 let RENDER_DEVICE = null;
+
 // ========================================
 
 // ---------- helpers ----------
@@ -46,15 +45,15 @@ function parseIfname(name) {
   return null;
 }
 
-function positionTooltip(t, ev) {
-  const pad = 8;
-  let left = ev.pageX + pad, top = ev.pageY + pad;
-  const r = t.getBoundingClientRect();
-  if (left + r.width > window.innerWidth) left = ev.pageX - r.width - pad;
-  if (top + r.height > window.innerHeight) top = ev.pageY - r.height - pad;
-  t.style.left = left + "px";
-  t.style.top = top + "px";
-}
+// function positionTooltip(t, ev) {
+//   const pad = 8;
+//   let left = ev.pageX + pad, top = ev.pageY + pad;
+//   const r = t.getBoundingClientRect();
+//   if (left + r.width > window.innerWidth) left = ev.pageX - r.width - pad;
+//   if (top + r.height > window.innerHeight) top = ev.pageY - r.height - pad;
+//   t.style.left = left + "px";
+//   t.style.top = top + "px";
+// }
 
 // ---------- client-side live fetch with TTL & safety ----------
 export async function fetchInterfaceLiveClient(device, ifname, portObj = null) {
@@ -89,79 +88,20 @@ export function clearVlanHighlight() {
 }
 
 // ---------- port tile ----------
-function portTile(port, device) {
+function createPortTile(port) {
   const el = document.createElement("div");
-  if (port._source === "cache") el.classList.add("cached");
-  if (port._source === "live")  el.classList.add("live");
-  if (port.pending === true)    el.classList.add("pending");
-
   el.className = "port";
   el.dataset.ifname = port.name;
 
-  /* ---------------------------
-     DATA ATTRIBUTES
-  --------------------------- */
-  const vlanTokens = [];
-  if (port.access_vlan) vlanTokens.push(String(port.access_vlan));
-  if (Array.isArray(port.trunk_vlans)) {
-    vlanTokens.push(...port.trunk_vlans.map(String));
-  }
-  if (vlanTokens.length) el.dataset.vlan = vlanTokens.join(" ");
-
-  if (port.bundle) el.dataset.bundle = port.bundle;
-  if (port.type === "ae") el.dataset.ae = port.name;
-  
-  /* ---------------------------
-     STATE CLASSES
-  --------------------------- */
-  if (!port.configured) el.classList.add("unconfigured");
-  if (port.oper_up) el.classList.add("oper-up");
-  else el.classList.add("oper-down");
-  // pending icon
-  if (port.pending) {
-    const badge = document.createElement("div");
-    badge.className = "pending-badge";
-    badge.title = "Pending change request";
-    badge.textContent = "⏳";
-    el.appendChild(badge);
-    el.classList.add("pending");
-  }
-  if (port.approved) el.classList.add("approved");
-
-  if (port.bundle) el.classList.add("is-bundled");
-  if (port.mode === "trunk") el.classList.add("is-trunk");
-  if (port.mode === "access") el.classList.add("is-access");
-
-  if (port.vc_port) {
-    el.classList.add("vc-port");
-    el.dataset.vcLink = vcLinkId(port.name);
-  }
-  if (port.name.startsWith("ge-1/") || port.name.startsWith("xe-1/")) {
-    el.classList.add("member-1");
-  } else {
-    el.classList.add("member-0");
-  }
-
-  /* ---------------------------
-     LABEL
-  --------------------------- */
   const label = document.createElement("div");
   label.className = "label-top";
-  label.textContent = port.name.split("/").pop();
   el.appendChild(label);
 
-  /* ---------------------------
-     STATUS DOT
-  --------------------------- */
   const dot = document.createElement("div");
-  dot.className = `dot ${port.oper_up ? "oper-up" : "oper-down"}`;
+  dot.className = "dot";
   el.appendChild(dot);
 
-  /* ---------------------------
-     TOOLTIP + HOVER
-  --------------------------- */
   el.addEventListener("mouseenter", ev => {
-    // LACP highlighting
     if (port.type === "ae") highlightBundle(port.name);
     if (port.bundle) {
       document
@@ -179,36 +119,86 @@ function portTile(port, device) {
   });
 
   el.addEventListener("mousemove", moveTooltip);
-
   el.addEventListener("mouseleave", () => {
     hideTooltip();
     clearBundle();
-    document
-      .querySelectorAll(".lacp-highlight")
+    document.querySelectorAll(".lacp-highlight")
       .forEach(p => p.classList.remove("lacp-highlight"));
   });
 
-  /* ---------------------------
-     CLICK → MODAL
-  --------------------------- */
   el.addEventListener("click", () => {
-    if (window.openModalForPort) {
-      window.openModalForPort(port);
-    }
+    window.openModalForPort?.(port);
   });
 
   return el;
 }
 
+function updatePortTile(el, port) {
+  el.className = "port"; // reset safe baseline
+
+  if (port._source === "cache") el.classList.add("cached");
+  if (port._source === "live") el.classList.add("live");
+  if (port.pending) el.classList.add("pending");
+  if (port.approved) el.classList.add("approved");
+  if (!port.configured) el.classList.add("unconfigured");
+
+  el.classList.add(port.oper_up ? "oper-up" : "oper-down");
+
+  if (port.bundle) {
+    el.classList.add("is-bundled");
+    el.dataset.bundle = port.bundle;
+  } else {
+    delete el.dataset.bundle;
+  }
+
+  if (port.type === "ae") el.dataset.ae = port.name;
+  else delete el.dataset.ae;
+
+  if (port.vc_port) {
+    el.classList.add("vc-port");
+    el.dataset.vcLink = vcLinkId(port.name);
+  } else {
+    delete el.dataset.vcLink;
+  }
+
+  el.classList.add(
+    port.name.startsWith("ge-1/") || port.name.startsWith("xe-1/")
+      ? "member-1"
+      : "member-0"
+  );
+
+  const label = el.querySelector(".label-top");
+  label.textContent = port.name.split("/").pop();
+
+  const dot = el.querySelector(".dot");
+  dot.className = `dot ${port.oper_up ? "oper-up" : "oper-down"}`;
+
+  // VLAN tokens
+  const vlans = [];
+  if (port.access_vlan) vlans.push(port.access_vlan);
+  if (Array.isArray(port.trunk_vlans)) vlans.push(...port.trunk_vlans);
+  if (vlans.length) el.dataset.vlan = vlans.join(" ");
+  else delete el.dataset.vlan;
+}
+
 // ---------- main renderer ----------
 export function drawPorts(ports, device) {
 
-  // If the device changed, reset the registries — otherwise keep them
-  if (device !== RENDER_DEVICE) {
-    AE_REGISTRY.clear();
-    VC_LINK_REGISTRY.clear();
+  // first-time init: set RENDER_DEVICE if null
+  if (RENDER_DEVICE === null) {
     RENDER_DEVICE = device;
-    // console.debug("Renderer: cleared AE/VC registries for device:", device);
+    // do NOT clear PORT_DOM on first set — we want skeleton elements reused
+  } else if (device !== RENDER_DEVICE) {
+    // device changed AFTER initial render
+    // Only clear if switching between TWO real devices (not skeleton -> real)
+    const bothReal = (RENDER_DEVICE !== "__skeleton__") && (device !== "__skeleton__");
+    if (bothReal) {
+      // switching between two real devices -> clear DOM cache so we don't mix devices
+      PORT_DOM.forEach(el => el.remove());
+      PORT_DOM.clear();
+    }
+    // if going skeleton -> real OR real -> skeleton, we keep PORT_DOM and reuse nodes
+    RENDER_DEVICE = device;
   }
 
   const grids = {
@@ -225,52 +215,58 @@ export function drawPorts(ports, device) {
     ae: document.getElementById("grid-ae")
   };
 
-  // ✅ HARD RESET – voorkomt stale DOM fragments (we explicitly keep registries)
-  Object.values(grids).forEach(g => {
-    if (!g) return;
-    Object.values(g).forEach(el => el && (el.innerHTML = ""));
-  });
+  // track which ports we saw this frame
+  const seen = new Set();
 
-  // local set to prevent duplicates within a single draw
-  const renderedAE = new Set();
-
-  ports.forEach(port => {
+  for (const port of ports) {
+    if (!port || !port.name) continue;
     const info = parseIfname(port.name);
-    if (!info) return;
+    if (!info) continue;
 
-    if (info.type === "ge") {
-      const member = info.member === 1 ? grids.m1 : grids.m0;
-      const target = info.index % 2 === 0 ? member.geTop : member.geBottom;
-      target?.appendChild(portTile(port, device));
-    }
+    seen.add(port.name);
 
-    else if (info.type === "xe") {
-      const member = port.name.startsWith("xe-1/") ? grids.m1 : grids.m0;
-      member?.xe?.appendChild(portTile(port, device));
-    }
+    let el = PORT_DOM.get(port.name);
 
-    else if (info.type === "ae" && port.configured) {
-      // Multi-level guard: (1) per-draw (renderedAE), (2) persistent per-device (AE_REGISTRY)
-      const deviceKey = `${device}|${port.name}`;
+    if (!el) {
+      // not present yet — create and attach
+      el = createPortTile(port);
+      PORT_DOM.set(port.name, el);
 
-      if (renderedAE.has(port.name)) {
-        return;
+      if (info.type === "ae") {
+        grids.ae?.appendChild(el);
+      } else if (info.type === "xe") {
+        const m = port.name.startsWith("xe-1/") ? grids.m1 : grids.m0;
+        m?.xe?.appendChild(el);
+      } else {
+        const m = info.member === 1 ? grids.m1 : grids.m0;
+        const target = info.index % 2 === 0 ? m.geTop : m.geBottom;
+        target?.appendChild(el);
       }
+    } else {
+      // already have element — ensure it's in the right container (in case structure changed)
+      const parentExpected = (info.type === "ae")
+        ? grids.ae
+        : (info.type === "xe")
+          ? (port.name.startsWith("xe-1/") ? grids.m1?.xe : grids.m0?.xe)
+          : (info.member === 1 ? (info.index % 2 === 0 ? grids.m1?.geTop : grids.m1?.geBottom) : (info.index % 2 === 0 ? grids.m0?.geTop : grids.m0?.geBottom));
 
-      if (AE_REGISTRY.has(deviceKey)) {
-        // Already rendered in a previous draw for this device — skip append.
-        // This prevents duplicates increasing when drawPorts is called multiple times without device change.
-        // Note: we still mark as rendered in this draw to avoid re-checking
-        renderedAE.add(port.name);
-        return;
+      if (parentExpected && el.parentElement !== parentExpected) {
+        parentExpected.appendChild(el);
       }
-
-      // Not yet rendered — register and append
-      AE_REGISTRY.add(deviceKey);
-      renderedAE.add(port.name);
-      grids.ae?.appendChild(portTile(port, device));
     }
-  });
+
+    // update visual state
+    updatePortTile(el, port);
+  }
+
+  // cleanup any port DOM entries that are no longer in the incoming list
+  for (const [key, el] of PORT_DOM.entries()) {
+    if (!seen.has(key)) {
+      // remove from DOM and cache
+      el.remove();
+      PORT_DOM.delete(key);
+    }
+  }
 }
 
 

@@ -16,6 +16,7 @@
   <nav class="nav-tabs">
     <button id="tab-switch" class="active">Switch config</button>
     <button id="tab-approvals">Approvals</button>
+    <button id="tab-audit">Audit</button>
   </nav>
   </div>
 </header>
@@ -28,15 +29,17 @@
   <div class="toolbar">
 
     <label for="switch-select">Switch</label>
-    <select id="switch-select"></select>
+    <select id="deviceSelect">
+      <option value="" disabled selected>Select a switch…</option>
+    </select>    
 
     <div class="switch-controls">
       <div class="left">
-        <button id="btn-refresh-interfaces">Refresh interfaces</button>
+        <button id="btn-refresh-interfaces" data-requires-switch disabled>Refresh Interfaces</button>
       </div>
     
       <div class="right">
-        <button id="btn-refresh-vlans">Refresh VLANs</button>
+        <button id="btn-refresh-vlans" data-requires-switch disabled>Refresh VLANs</button>
         <span id="vlan-cache-status" class="hidden"></span>
       </div>
     </div>
@@ -45,9 +48,8 @@
   <div id="switch-grid-wrapper">
     <div id="grid-overlay" class="hidden">
       <div class="spinner"></div>
-      <div>Retrieving switch configuration…</div>
       <div id="fetch-status" class="status loading">
-        ⏳ Ophalen van switch...
+        ⏳ Retrieving switch configuration…
       </div>
     </div>
     
@@ -100,7 +102,6 @@
 </section>
 
 <!-- ===== APPROVALS VIEW ===== -->
-<!-- ===== APPROVALS VIEW ===== -->
 <section id="view-approvals" class="hidden">
 
   <div class="container approvals">
@@ -114,6 +115,43 @@
 
     <div id="no-approvals" class="empty-state hidden">
       ✅ No pending approvals
+    </div>
+
+  </div>
+
+</section>
+
+<!-- ===== AUDIT VIEW ===== -->
+<section id="view-audit" class="hidden">
+
+  <div class="container audit">
+
+    <div class="audit-header">
+      <h2>Audit log</h2>
+
+      <select id="audit-device-filter">
+        <option value="">All devices</option>
+      </select>
+    </div>
+
+    <table class="audit-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Device</th>
+          <th>Interface</th>
+          <th>Action</th>
+          <th>User</th>
+          <th>Comment</th>
+        </tr>
+      </thead>
+      <tbody id="auditTableBody">
+        <!-- rows injected by JS -->
+      </tbody>
+    </table>
+
+    <div id="no-audit" class="empty-state hidden">
+      📭 No audit records
     </div>
 
   </div>

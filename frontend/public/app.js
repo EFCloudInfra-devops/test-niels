@@ -13,7 +13,10 @@ let pendingByInterface = {};
 let CURRENT_SWITCH_PORTS = null;
 let CURRENT_DEVICE = null;
 let CURRENT_SWITCH_RENDER_STATE = null;
-
+const authHeaders = {
+  "X-User": "admin",
+  "X-Role": "admin",
+};
 function parseIfParts(name) {
   // ge-0/0/12 or xe-1/2/3 or ae1
   if (!name) return {};
@@ -46,8 +49,6 @@ function portCompare(a, b) {
   return (a.name || "").localeCompare(b.name || "");
 }
 
-
-
 function renderInitialVC() {
   const ports = [
     ...allPhysicalPortsVC(2),
@@ -55,33 +56,38 @@ function renderInitialVC() {
     ...allAggregatePorts(8)
   ];
 
-  drawPorts(ports, null); // ✅ GEEN backend data, alleen skeleton
+  drawPorts(ports, "__skeleton__");
 }
 
 function showView(name) {
-  document.getElementById("view-switch")
-    .classList.toggle("hidden", name !== "switch");
-  document.getElementById("view-approvals")
-    .classList.toggle("hidden", name !== "approvals");
+  const views = ["switch", "approvals", "audit"];
 
-  document.getElementById("tab-switch")
-    .classList.toggle("active", name === "switch");
-  document.getElementById("tab-approvals")
-    .classList.toggle("active", name === "approvals");
+  views.forEach(v => {
+    document
+      .getElementById(`view-${v}`)
+      ?.classList.toggle("hidden", v !== name);
+
+    document
+      .getElementById(`tab-${v}`)
+      ?.classList.toggle("active", v === name);
+  });
 
   if (name === "approvals") {
     loadApprovals();
+    return;
+  }
+
+  if (name === "audit") {
+    load_audit();   // 👈 straks je audit loader
+    return;
   }
 
   if (name === "switch") {
     loadPending();
 
-    // redraw from cached render state if available
+    // alleen redraw als data al bestaat
     if (CURRENT_DEVICE && CURRENT_SWITCH_PORTS) {
       drawPorts(CURRENT_SWITCH_PORTS, CURRENT_DEVICE);
-    } else {
-      // otherwise trigger a normal reload (which will call mergeAndRedrawPorts)
-      reloadAllPorts();
     }
   }
 }
@@ -92,46 +98,61 @@ function setText(id, txt) {
   if (el) el.textContent = txt;
 }
 
-// load switches into select
 async function loadSwitches() {
   try {
     const res = await fetch("/api/switches");
     const list = await res.json();
-    const sel = document.getElementById("switch-select");
+
+    const sel = document.getElementById("deviceSelect");
     if (!sel) return;
+
     sel.innerHTML = `<option value="">-- select switch --</option>`;
+
     list.forEach(s => {
       const o = document.createElement("option");
       o.value = s.name;
       o.textContent = s.name;
       sel.appendChild(o);
     });
-    currentSwitch = list[0]?.name || null;
-    window.currentSwitch = currentSwitch;
-    sel.value = currentSwitch;
-    sel.addEventListener("change", async (e) => {
-      currentSwitch = e.target.value;
-      window.currentSwitch = currentSwitch;
+
+    // ✅ expliciet geen selectie
+    sel.value = "";
+    currentSwitch = null;
+    window.currentSwitch = null;
+    setSwitchButtons(false); // bij load
+
+    sel.onchange = async () => {
+      const sw = sel.value;
+      if (!sw) return;
     
-      await loadVlanList();
+      currentSwitch = sw;
+      window.currentSwitch = sw; // ✅ BELANGRIJK
+      localStorage.setItem("lastSwitch", sw);
     
-      // ✅ ALWAYS load cached interfaces first
-      setFetchStatus("Loading cached config…", "loading");
-      const r = await fetch(`/api/switches/${currentSwitch}/interfaces`);
-      if (r.ok) {
-        const data = await r.json();
-        mergeAndRedrawPorts(currentSwitch, data);
-        setFetchStatus("Cached config loaded", "ok");
-      } else {
-        setFetchStatus("Failed to load cache", "error");
+      // ✅ ALTIJD eerst knoppen activeren
+      setSwitchButtons(true);
+    
+      try {
+        await loadPending();
+        await loadVlanList();
+        await reloadAllPorts(false);
+      } catch (e) {
+        console.error("switch load failed", e);
       }
-    });    
-    // first time load VLANs
-    // await loadVlanList();
+    };    
+
+    // ✅ restore laatst gekozen switch
+    const last = localStorage.getItem("lastSwitch");
+    if (last && [...sel.options].some(o => o.value === last)) {
+      sel.value = last;
+      sel.dispatchEvent(new Event("change"));
+    }
+
   } catch (e) {
-    console.error("loadSwitches", e);
+    console.error("loadSwitches failed", e);
   }
 }
+
 
 // load VLAN list from backend for the current switch
 let _vlans_cache = [];
@@ -143,17 +164,22 @@ async function loadVlanList() {
     if (!r.ok) return;
 
     const raw = await r.json();
+    _vlans_cache =
+      Array.isArray(raw) ? raw :
+      Array.isArray(raw.vlans) ? raw.vlans :
+      Array.isArray(raw.data)  ? raw.data  :
+      [];
 
-    if (Array.isArray(raw)) {
-      _vlans_cache = raw;
-    } else if (raw?.data && typeof raw.data === "object") {
-      _vlans_cache = Object.entries(raw.data).map(([name, v]) => ({
-        name,
-        id: v.vlan_id ?? v.id ?? null
-      }));
-    } else {
-      _vlans_cache = [];
-    }
+    // if (Array.isArray(raw)) {
+    //   _vlans_cache = raw;
+    // } else if (raw?.data && typeof raw.data === "object") {
+    //   _vlans_cache = Object.entries(raw.data).map(([name, v]) => ({
+    //     name,
+    //     id: v.vlan_id ?? v.id ?? null
+    //   }));
+    // } else {
+    //   _vlans_cache = [];
+    // }
 
     const vlanSel = document.getElementById("vlan-select");
     if (vlanSel) {
@@ -175,20 +201,24 @@ async function loadVlanList() {
   }
 }
 
-async function reloadAllPorts(live = false) {
-  if (!currentSwitch) return;
+async function reloadAllPorts(live = false, forcedSwitch = null) {
+  const sw = forcedSwitch || currentSwitch;
+  if (!sw) {
+    console.warn("reloadAllPorts called without switch");
+    return;
+  }
 
   const url = live
-    ? `/api/switches/${currentSwitch}/interfaces/retrieve`
-    : `/api/switches/${currentSwitch}/interfaces`;
+    ? `/api/switches/${sw}/interfaces/retrieve`
+    : `/api/switches/${sw}/interfaces`;
 
   const r = await fetch(url, { method: live ? "POST" : "GET" });
   if (!r.ok) return;
 
   const data = await r.json();
-
-  mergeAndRedrawPorts(currentSwitch, data);
+  mergeAndRedrawPorts(sw, data);
 }
+
 
 function enrichPorts(ports, source, ts) {
   return ports.map(p => ({
@@ -330,6 +360,31 @@ async function openModalForPort(port) {
   // show modal
   modal.classList.remove("hidden");
 
+  const tabAudit  = document.getElementById("tab-audit");
+  const tabConfig = document.getElementById("tab-config");
+  const panelCfg  = document.getElementById("tab-panel-config");
+  const panelAud  = document.getElementById("tab-panel-audit");
+
+  if (tabAudit && tabConfig) {
+    tabAudit.onclick = () => {
+      tabAudit.classList.add("active");
+      tabConfig.classList.remove("active");
+
+      panelAud.classList.remove("hidden");
+      panelCfg.classList.add("hidden");
+
+      load_audit(port); // 🔥 HIER
+    };
+
+    tabConfig.onclick = () => {
+      tabConfig.classList.add("active");
+      tabAudit.classList.remove("active");
+
+      panelCfg.classList.remove("hidden");
+      panelAud.classList.add("hidden");
+    };
+  }
+  
   // attach submit handler (one-time)
   const form = document.getElementById("configForm");
   if (!form) return;
@@ -468,6 +523,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("tab-switch").onclick = () => showView("switch");
   document.getElementById("tab-approvals").onclick = () => showView("approvals");
+  document.getElementById("tab-audit").onclick = () => showView("audit");
 
   renderInitialVC();     // ✅ altijd iets tonen
   loadSwitches();        // vult dropdown
@@ -576,7 +632,12 @@ async function approveRequest(id) {
 
   if (!r.ok) { alert("Approve failed"); return; }
 
-  const approvedReq = await r.json(); // <-- fails if 204
+  let approvedReq = null;
+  try {
+    approvedReq = await r.json();
+  } catch {
+    // fallback: niets terug
+  }
 
   // 🔥 refresh pending map
   await loadPending();
@@ -585,15 +646,16 @@ async function approveRequest(id) {
   await reloadAllPorts();
 
   // ✨ highlight approved port
-  flashApprovedPort(
-    approvedReq.device,
-    approvedReq.interface
-  );
+  if (approvedReq) {
+    flashApprovedPort(
+      approvedReq.device,
+      approvedReq.interface
+    );
+  }
 
   // refresh approvals list
   await loadApprovals();
 }
-
 
 async function rejectRequest(id) {
   const reason = prompt("Reject reason?");
@@ -616,19 +678,19 @@ function setFetchStatus(text, cls = "loading") {
   el.className = "status " + cls;
 }
 
-async function loadInterfaces(device) {
-  try {
-    const r = await fetch(`/api/switches/${device}/interfaces`);
-    const data = await r.json();
+// async function loadInterfaces(device) {
+//   try {
+//     const r = await fetch(`/api/switches/${device}/interfaces`);
+//     const data = await r.json();
 
-    setFetchStatus("✅ Switch data geladen", "ok");
+//     setFetchStatus("✅ Switch data geladen", "ok");
 
-    mergeAndRedrawPorts(device, data);
+//     mergeAndRedrawPorts(device, data);
 
-  } catch {
-    setFetchStatus("⚠️ Kan switch niet ophalen", "error");
-  }
-}
+//   } catch {
+//     setFetchStatus("⚠️ Kan switch niet ophalen", "error");
+//   }
+// }
 
 function allPhysicalPortsVC(members = 2) {
   const ports = [];
@@ -911,7 +973,7 @@ document.getElementById("btn-refresh-interfaces").onclick = async () => {
     if (!r.ok) throw new Error("retrieve failed");
     const data = await r.json();
     // endpoint returns { interfaces: [...] } — pass the full payload as 'live' override
-    mergeAndRedrawPorts(currentSwitch, [], data.interfaces || data);
+    mergeAndRedrawPorts(currentSwitch, data.interfaces || data);
   } catch (e) {
     console.error(e);
     alert("Config ophalen mislukt");
@@ -933,29 +995,42 @@ document.getElementById("btn-refresh-vlans").onclick = async () => {
   }
 };
 
-// document.getElementById("btn-retrieve").onclick = async () => {
-//   const sw = document.getElementById("switch-select").value;
-//   if (!sw) return;
+function setSwitchButtons(enabled) {
+  document
+    .querySelectorAll("[data-requires-switch]")
+    .forEach(b => b.disabled = !enabled);
+}
 
-//   const overlay = document.getElementById("grid-overlay");
-//   overlay.classList.remove("hidden");
+async function load_audit(device = "") {
+  const res = await fetch(
+    `/api/audit${device ? `?device=${device}` : ""}`,
+    { headers: authHeaders }
+  );
 
-//   loadVlanCacheStatus(currentSwitch);
+  const data = await res.json();
 
-//   try {
-//     const r = await fetch(`/api/switches/${sw}/interfaces/retrieve`, {
-//       method: "POST"
-//     });
+  const body = document.getElementById("auditTableBody");
+  const empty = document.getElementById("no-audit");
 
-//     if (!r.ok) throw new Error("retrieve failed");
+  body.innerHTML = "";
 
-//     const data = await r.json();
-//     mergeAndRedrawPorts(sw, data);
+  if (!data.length) {
+    empty.classList.remove("hidden");
+    return;
+  }
 
-//   } catch (e) {
-//     console.error(e);
-//     alert("Config ophalen mislukt");
-//   } finally {
-//     overlay.classList.add("hidden");
-//   }
-// };
+  empty.classList.add("hidden");
+
+  for (const row of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${new Date(row.updated_at || row.created_at).toLocaleString()}</td>
+      <td>${row.device}</td>
+      <td>${row.interface}</td>
+      <td class="status ${row.status}">${row.status}</td>
+      <td>${row.approver || row.requester}</td>
+      <td>${row.comment || ""}</td>
+    `;
+    body.appendChild(tr);
+  }
+}

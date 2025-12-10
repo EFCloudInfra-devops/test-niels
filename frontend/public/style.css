@@ -103,7 +103,7 @@ body {
 #btn-retrieve {
   height: 32px;
   padding: 0 14px;
-  background: linear-gradient(145deg, #16a34a, #15803d);
+  background: linear-gradient(145deg, #238636, #15803d);
   border: none;
   border-radius: 6px;
   color: white;
@@ -284,7 +284,10 @@ body {
   opacity: 0.35;
   filter: grayscale(100%);
 }
-
+.port.unconfigured.vc-port {
+  opacity: 0.7;
+  filter: grayscale(0%);
+}
 .port.oper-down {
   opacity: 0.45;
   filter: grayscale(70%);
@@ -346,15 +349,10 @@ body {
 .port.vc-port .dot.oper-up {
   background: #00ff9c;
 }
-/* geen hover acties */
-.port.vc-port:hover {
-  transform: none;
-  box-shadow: none;
-}
 
 .port.vc-highlight {
-  outline: 3px solid #ffd700;
-  box-shadow: 0 0 12px rgba(255,215,0,0.9);
+  outline: 3px solid #ffd700 !important;
+  box-shadow: 0 0 12px rgba(255,215,0,0.9) !important;
   z-index: 5;
 }
 
@@ -545,7 +543,7 @@ body {
 }
 
 .modal-actions .primary {
-  background: #16a34a;
+  background: #238636;
   color: white;
 }
 
@@ -775,7 +773,7 @@ button:hover {
 }
 
 .btn.approve {
-  background: #16a34a;
+  background: #238636;
   color: white;
 }
 .btn.approve:hover { background: #15803d; }
@@ -827,12 +825,11 @@ button:hover {
   font-size: 13px;
   border-radius: 6px;
   border: 1px solid #ccc;
-  background: #f6f6f6;
   cursor: pointer;
 }
 
 .switch-controls button:hover {
-  background: #eaeaea;
+  background: #2ea043;
 }
 
 #vlan-cache-status {
@@ -840,3 +837,19 @@ button:hover {
   font-size: 12px;
   opacity: 0.7;
 }
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.audit-table th,
+.audit-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #ddd;
+}
+
+.audit-table .approved { color: green; }
+.audit-table .rejected { color: red; }
+.audit-table .failed { color: darkred; }
+.audit-table .pending { color: orange; }

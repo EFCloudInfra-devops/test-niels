@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, Text, JSON, ForeignKey
 from sqlalchemy import Enum as SAEnum
 from datetime import datetime
 from .database import Base
@@ -59,3 +59,19 @@ class CachedVlan(Base):
     # __table_args__ = (
     #     UniqueConstraint("device", "vlan_id", name="uix_device_vlan"),
     # )
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    actor = Column(String, nullable=False)           # wie
+    action = Column(String, nullable=False)          # approve / reject
+    device = Column(String, nullable=False)
+    interface = Column(String, nullable=True)
+
+    request_id = Column(Integer, ForeignKey("change_requests.id"))
+    comment = Column(String, nullable=True)
+
+    payload = Column(JSON, nullable=True)            # snapshot / diff / metadata

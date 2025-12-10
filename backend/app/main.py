@@ -10,7 +10,30 @@ from sqlalchemy.orm import Session
 import traceback
 import json
 from datetime import datetime
-from .models import InterfaceCache, Vlan, CachedVlan
+from .models import InterfaceCache, CachedVlan, AuditLog
+
+def write_audit(
+    db: Session,
+    *,
+    actor: str,
+    action: str,
+    device: str,
+    interface: str | None = None,
+    request_id: int | None = None,
+    comment: str | None = None,
+    payload: dict | None = None,
+):
+    entry = models.AuditLog(
+        actor=actor,
+        action=action,
+        device=device,
+        interface=interface,
+        request_id=request_id,
+        comment=comment,
+        payload=payload,
+    )
+    db.add(entry)
+    db.commit()
 
 
 app = FastAPI()
@@ -25,6 +48,7 @@ def get_db():
         yield db
     finally:
         db.close()
+
 
 # === Very simple "auth" dependency for demo ===
 # Expects headers: X-User, X-Role
@@ -148,10 +172,11 @@ def approve_request(
     req = db.query(models.ChangeRequest).get(req_id)
     if not req:
         raise HTTPException(404, "Request not found")
+
     if req.status != models.RequestStatus.pending:
         raise HTTPException(400, "Request not pending")
 
-    # ✅ mark approved BEFORE apply
+    # ✅ mark approved
     req.status = models.RequestStatus.approved
     req.approver = user["username"]
     if comment:
@@ -159,7 +184,19 @@ def approve_request(
 
     db.commit()
 
-    # 🔐 safe NETCONF apply
+    # ✅ audit: approved
+    audit(
+        db,
+        event="approved",
+        device=req.device,
+        interface=req.interface,
+        request_id=req.id,
+        actor=user["username"],
+        config=req.config,
+        message=comment
+    )
+
+    # 🔐 APPLY
     try:
         device_info = get_device(req.device)
 
@@ -170,18 +207,38 @@ def approve_request(
                 config=req.config
             )
 
-            # nc.commit()   # ✅ DIT IS DE FIX
-
+        # ✅ audit: apply success
+        audit(
+            db,
+            event="apply_success",
+            device=req.device,
+            interface=req.interface,
+            request_id=req.id,
+            actor="system",
+            config=req.config
+        )
 
     except Exception as e:
         req.status = "failed"
-        req.comment = f"Apply failed: {e}"
+        req.comment = str(e)
         db.commit()
+
+        # ❌ audit: apply failed
+        audit(
+            db,
+            event="apply_failed",
+            device=req.device,
+            interface=req.interface,
+            request_id=req.id,
+            actor="system",
+            config=req.config,
+            message=str(e)
+        )
+
         raise HTTPException(500, f"NETCONF apply failed: {e}")
 
     db.refresh(req)
     return req
-
 
 @app.post("/api/requests/{req_id}/reject")
 def reject_request(
@@ -209,6 +266,9 @@ def reject_request(
 @app.post("/api/switches/{device}/interfaces/retrieve")
 def interfaces_retrieve(device: str, db: Session = Depends(get_db)):
     interfaces = netconf.get_interfaces_raw(device)
+
+    for i in interfaces:
+        i["_source"] = "live"
 
     netconf.store_interfaces_cache(
         db,
@@ -243,3 +303,55 @@ def refresh_vlans(device: str, db: Session = Depends(get_db),
         "count": len(vlans),
         "status": "refreshed"
     }
+
+@app.get("/api/audit")
+def load_audit(
+    device: Optional[str] = None,
+    interface: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user = Depends(require_role(("admin", "approver")))
+):
+    q = db.query(AuditLog)
+
+    if device:
+        q = q.filter(AuditLog.device == device)
+    if interface:
+        q = q.filter(AuditLog.interface == interface)
+
+    rows = (
+        q.order_by(AuditLog.created_at.desc())
+         .limit(limit)
+         .all()
+    )
+
+    return [
+        {
+            "id": r.id,
+            "event": r.event,
+            "device": r.device,
+            "interface": r.interface,
+            "actor": r.actor,
+            "message": r.message,
+            "config": r.config,
+            "created_at": r.created_at.isoformat()
+        }
+        for r in rows
+    ]
+
+@app.on_event("startup")
+def normalize_interface_cache():
+    db = SessionLocal()
+    try:
+        rows = db.query(InterfaceCache).all()
+        for row in rows:
+            changed = False
+            for p in row.data:
+                if "_source" not in p:
+                    p["_source"] = "cache"
+                    changed = True
+            if changed:
+                row.updated_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
