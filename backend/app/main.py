@@ -3,8 +3,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
 from typing import Optional, List
 from .devices import load_devices, get_device
-from . import netconf
-from . import models, schemas
+from . import netconf, models, schemas
 from .database import SessionLocal, init_db, Base, engine
 from sqlalchemy.orm import Session
 import traceback
@@ -34,7 +33,6 @@ def write_audit(
     )
     db.add(entry)
     db.commit()
-
 
 app = FastAPI()
 
@@ -183,20 +181,7 @@ def approve_request(
         req.comment = comment
 
     db.commit()
-
-    # ✅ audit: approved
-    audit(
-        db,
-        event="approved",
-        device=req.device,
-        interface=req.interface,
-        request_id=req.id,
-        actor=user["username"],
-        config=req.config,
-        message=comment
-    )
-
-    # 🔐 APPLY
+    # APPLY
     try:
         device_info = get_device(req.device)
 
@@ -207,37 +192,50 @@ def approve_request(
                 config=req.config
             )
 
-        # ✅ audit: apply success
-        audit(
+        write_audit(
             db,
-            event="apply_success",
+            actor="system",
+            action="apply_success",
             device=req.device,
             interface=req.interface,
             request_id=req.id,
-            actor="system",
-            config=req.config
+            payload={"config": req.config}
         )
 
     except Exception as e:
-        req.status = "failed"
+        req.status = models.RequestStatus.failed
         req.comment = str(e)
         db.commit()
 
-        # ❌ audit: apply failed
-        audit(
+        write_audit(
             db,
-            event="apply_failed",
+            actor="system",
+            action="apply_failed",
             device=req.device,
             interface=req.interface,
             request_id=req.id,
-            actor="system",
-            config=req.config,
-            message=str(e)
+            comment=str(e),
+            payload={"config": req.config}
         )
 
         raise HTTPException(500, f"NETCONF apply failed: {e}")
-
+    
     db.refresh(req)
+    
+    # ✅ audit: approved
+    write_audit(
+        db,
+        actor=user["username"],
+        action="approve",
+        device=req.device,
+        interface=req.interface,
+        request_id=req.id,
+        comment=comment,
+        payload={
+            "config": req.config,
+            "status": "approved"
+        }
+    )
     return req
 
 @app.post("/api/requests/{req_id}/reject")
@@ -260,6 +258,19 @@ def reject_request(
         item.comment = comment
 
     db.commit()
+    write_audit(
+        db,
+        actor=user["username"],
+        action="reject",
+        device=item.device,
+        interface=item.interface,
+        request_id=item.id,
+        comment=comment,
+        payload={
+            "status": "rejected"
+        }
+    )
+
     db.refresh(item)
     return item
 
@@ -312,46 +323,175 @@ def load_audit(
     db: Session = Depends(get_db),
     user = Depends(require_role(("admin", "approver")))
 ):
-    q = db.query(AuditLog)
+    q = db.query(models.AuditLog)
 
     if device:
-        q = q.filter(AuditLog.device == device)
+        q = q.filter(models.AuditLog.device == device)
     if interface:
-        q = q.filter(AuditLog.interface == interface)
+        q = q.filter(models.AuditLog.interface == interface)
 
-    rows = (
-        q.order_by(AuditLog.created_at.desc())
-         .limit(limit)
-         .all()
-    )
+    rows = q.order_by(models.AuditLog.timestamp.desc()).limit(limit).all()
 
     return [
         {
             "id": r.id,
-            "event": r.event,
+            "timestamp": r.timestamp.isoformat(),
+            "actor": r.actor,
+            "action": r.action,
             "device": r.device,
             "interface": r.interface,
-            "actor": r.actor,
-            "message": r.message,
-            "config": r.config,
-            "created_at": r.created_at.isoformat()
+            "request_id": r.request_id,
+            "comment": r.comment,
+            "payload": r.payload,
         }
         for r in rows
     ]
+
+def _normalize_cached_interfaces_row(row):
+    """
+    Ensure cached InterfaceCache.data is sane:
+      - ensure _source present
+      - remove skeleton / unconfigured physical ports (keep only configured or VC)
+      - ensure expected fields exist (best-effort)
+    """
+    changed = False
+    cleaned = []
+    for p in (row.data or []):
+        # ensure name exists
+        name = p.get("name")
+        if not name:
+            changed = True
+            continue
+
+        # make sure source present
+        if "_source" not in p:
+            p["_source"] = "cache"
+            changed = True
+
+        # keep if configured OR explicit vc_port True
+        if p.get("configured") or p.get("vc_port"):
+            # normalize a few common keys to avoid undefined in frontend
+            p.setdefault("member", 0)
+            p.setdefault("fpc", 0)
+            p.setdefault("type", name.split("-",1)[0] if "-" in name else ("ae" if name.startswith("ae") else "ge"))
+            p.setdefault("port", 0)
+            p.setdefault("bundle", None)
+            p.setdefault("mode", None)
+            p.setdefault("access_vlan", None)
+            p.setdefault("trunk_vlans", [])
+            p.setdefault("native_vlan", None)
+            p.setdefault("admin_up", True)
+            p.setdefault("oper_up", False)
+            p.setdefault("description", None)
+            p.setdefault("vc_status", None)
+            cleaned.append(p)
+        else:
+            changed = True
+
+    if changed:
+        row.data = cleaned
+        row.updated_at = datetime.utcnow()
+    return changed
 
 @app.on_event("startup")
 def normalize_interface_cache():
     db = SessionLocal()
     try:
         rows = db.query(InterfaceCache).all()
+        any_changed = False
         for row in rows:
-            changed = False
-            for p in row.data:
-                if "_source" not in p:
-                    p["_source"] = "cache"
-                    changed = True
-            if changed:
-                row.updated_at = datetime.utcnow()
-        db.commit()
+            if _normalize_cached_interfaces_row(row):
+                any_changed = True
+                db.merge(row)
+        if any_changed:
+            db.commit()
     finally:
         db.close()
+
+# -------------------------
+# ROLLBACK API (UI TAB)
+# -------------------------
+
+@app.get("/api/rollback/{device}")
+def rollback_list(
+    device: str,
+    user=Depends(require_role(("admin","approver"))),
+):
+    """
+    Return parsed commit history.
+    """
+    try:
+        dev = get_device(device)
+        txt = netconf.get_rollback_list(dev)
+    except Exception as e:
+        raise HTTPException(500, f"NETCONF failed: {e}")
+
+    commits = []
+
+    import re
+    line_re = re.compile(
+        r"^\s*(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\S+)\s+by\s+(\S+)"
+    )
+
+    current = None
+    for line in txt.splitlines():
+        m = line_re.match(line)
+        if m:
+            if current:
+                commits.append(current)
+
+            current = {
+                "index": int(m.group(1)),
+                "timestamp": m.group(2),
+                "user": m.group(3),
+                "comment": ""
+            }
+
+        elif "comment:" in line and current:
+            current["comment"] = line.split("comment:", 1)[1].strip()
+
+    if current:
+        commits.append(current)
+
+    return commits
+
+@app.get("/api/rollback/{device}/{idx}/diff")
+def rollback_diff(device: str, idx: int):
+    try:
+        dev = get_device(device)
+        diff = netconf.get_rollback_diff(dev, idx)
+        return diff
+    except Exception as e:
+        raise HTTPException(500, f"NETCONF failed: {e}")
+
+@app.post("/api/rollback/{device}/{idx}/apply")
+def rollback_apply(
+    device: str,
+    idx: int,
+    user=Depends(require_role(("admin","approver"))),
+    db: Session = Depends(get_db)
+):
+    """
+    Apply rollback <idx>.
+    """
+    try:
+        dev = get_device(device)
+
+        with netconf.connect(dev) as nc:
+            netconf.apply_rollback(nc, idx)
+
+        # audit log
+        write_audit(
+            db,
+            actor=user["username"],
+            action="rollback_apply",
+            device=device,
+            interface=None,
+            comment=f"Rollback {idx} applied",
+            payload={"rollback": idx}
+        )
+
+        return {"status": "ok", "rollback": idx}
+
+    except Exception as e:
+        raise HTTPException(500, f"NETCONF rollback failed: {e}")

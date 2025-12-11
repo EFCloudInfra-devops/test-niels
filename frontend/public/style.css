@@ -285,11 +285,9 @@ body {
   filter: grayscale(100%);
 }
 .port.unconfigured.vc-port {
-  opacity: 0.7;
   filter: grayscale(0%);
 }
 .port.oper-down {
-  opacity: 0.45;
   filter: grayscale(70%);
   background: #8b949e;
 }
@@ -794,9 +792,6 @@ button:hover {
   opacity: 0.6;
 }
 
-.port.live {
-  outline: 2px solid #4caf50;
-}
 .cache-label {
   font-size: 12px;
   color: #888;
@@ -838,18 +833,317 @@ button:hover {
   opacity: 0.7;
 }
 
-.audit-table {
+.audit-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.audit-item {
+  border-left: 3px solid #666;
+  padding: 8px 12px;
+  background: #1f1f1f;
+  border-radius: 4px;
+}
+
+.audit-item.approve { border-color: #4caf50; }
+.audit-item.reject { border-color: #f44336; }
+.audit-item.apply_success { border-color: #2196f3; }
+.audit-item.apply_failed { border-color: #ff9800; }
+
+.audit-meta {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.audit-action {
+  font-weight: bold;
+}
+
+.audit-payload {
+  margin-top: 6px;
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+/* =====================================================
+   AUDIT – CLEAN DARK THEME TABLE
+===================================================== */
+
+.container.audit {
+  max-width: 80%;
+  margin: 0 auto;
+  padding: 10px;
+}
+
+/* FILTERS */
+.audit-filters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.audit-filters select,
+.audit-filters input {
+  padding: 8px 12px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+/* ============================================
+   AUDIT TABLE — DARK THEME
+============================================ */
+.audit-title {
+  margin-bottom: 14px;
+  color: #e5e7eb;
+  font-size: 20px;
+}
+
+.audit-toolbar select,
+.audit-toolbar input {
+  background: #0d1117;
+  border: 1px solid #334155;
+  color: #e5e7eb;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+/* Card wrapper */
+.audit-table-wrapper {
+  background: #0f172a;
+  padding: 16px;
+  border-radius: 14px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  border: 1px solid #1e293b;
+}
+
+/* DataTable base */
+#audit-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0 8px;
 }
 
-.audit-table th,
-.audit-table td {
+#audit-table thead th {
+  color: #a5b4fc;
+  background: transparent !important;
+  border-bottom: 1px solid #334155 !important;
+  padding-bottom: 6px !important;
+}
+
+#audit-table tbody tr {
+  background: #1e293b !important;
+  border-radius: 10px;
+  color: #e5e7eb;
+  cursor: pointer;
+  transition: background .2s, transform .1s;
+}
+
+#audit-table tbody tr:hover {
+  background: #283548 !important;
+  transform: translateX(4px);
+}
+
+#audit-table td {
+  padding: 12px 10px !important;
+  vertical-align: middle;
+}
+
+/* Pagination buttons */
+.dt-paging button {
+  background: #1e293b !important;
+  color: #e5e7eb !important;
+  border: 1px solid #475569 !important;
+  margin: 0 2px;
+  border-radius: 6px !important;
+}
+.dt-paging button:hover:not(.disabled) {
+  background: #334155 !important;
+}
+/* ---- AUDIT TOOLBAR ---- */
+
+.audit-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
+.audit-filter-group {
+  display: flex;
+  gap: 10px;
   padding: 6px 10px;
-  border-bottom: 1px solid #ddd;
+  background: #f6f7f9;
+  border-radius: 8px;
+  border: 1px solid #ddd;
 }
 
-.audit-table .approved { color: green; }
-.audit-table .rejected { color: red; }
-.audit-table .failed { color: darkred; }
-.audit-table .pending { color: orange; }
+.audit-select,
+.audit-input {
+  height: 32px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #bbb;
+  background: white;
+  font-size: 14px;
+}
+
+.audit-select:focus,
+.audit-input:focus {
+  outline: none;
+  border-color: #2680eb;
+  box-shadow: 0 0 0 2px rgba(38, 128, 235, 0.2);
+}
+
+/* ---- DATATABLE STYLING ---- */
+
+#audit-table_wrapper {
+  margin-top: 10px;
+}
+
+/* Sticky header */
+#audit-table thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.1);
+  z-index: 10;
+}
+
+/* Row hover */
+#audit-table tbody tr:hover {
+  background: #f2f6ff !important;
+  cursor: pointer;
+}
+
+/* ---- TIMELINE COLORS ---- */
+
+.timeline-dot.audit-approve {
+  background: #3cb371; /* groen */
+}
+
+.timeline-dot.audit-reject {
+  background: #d9534f; /* rood */
+}
+
+.timeline-dot.audit-apply_success {
+  background: #0275d8; /* blauw */
+}
+
+.timeline-dot.audit-apply_failed {
+  background: #f0ad4e; /* oranje */
+}
+
+/* Event badges */
+.audit-event {
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: white;
+}
+
+.audit-event.audit-approve {
+  background: #3cb371;
+}
+
+.audit-event.audit-reject {
+  background: #d9534f;
+}
+
+.audit-event.audit-apply_success {
+  background: #0275d8;
+}
+
+.audit-event.audit-apply_failed {
+  background: #f0ad4e;
+  color: #000;
+}
+
+
+/* ============================================
+   ROLLBACK VIEW
+============================================ */
+.rollback-toolbar select {
+  background: #0d1117;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.rollback-layout {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+}
+
+.rb-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  overflow-y: auto;
+  max-height: 560px;
+}
+
+.rb-list li {
+  padding: 12px;
+  border-bottom: 1px solid #1e293b;
+  cursor: pointer;
+  color: #e5e7eb;
+}
+.rb-list li:hover {
+  background: #1e293b;
+}
+.rb-list li.active {
+  background: #334155;
+  font-weight: 600;
+}
+
+.rb-diff-box {
+  background: #0d1117;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 20px;
+  white-space: pre-wrap;
+  font-family: monospace;
+  color: #d1d5db;
+  overflow-y: auto;
+  max-height: 560px;
+}
+
+/* ====== Tooltip redesign ====== */
+.tooltip-card {
+  background: #1e1e1e;
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  font-size: 13px;
+  line-height: 1.4;
+  max-width: 240px;
+}
+
+.tooltip-title {
+  font-weight: bold;
+  margin-bottom: 6px;
+  color: #4fc3f7;
+}
+
+.tooltip-line {
+  margin: 2px 0;
+  opacity: 0.85;
+}
+
+.port-tooltip {
+  position: absolute;
+  pointer-events: none;
+  z-index: 99999;
+}

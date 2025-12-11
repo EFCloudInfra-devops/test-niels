@@ -13,10 +13,16 @@ let pendingByInterface = {};
 let CURRENT_SWITCH_PORTS = null;
 let CURRENT_DEVICE = null;
 let CURRENT_SWITCH_RENDER_STATE = null;
-const authHeaders = {
-  "X-User": "admin",
-  "X-Role": "admin",
-};
+let auditDT = null;
+
+function authHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "X-User": "admin",
+    "X-Role": "admin"
+  };
+}
+
 function parseIfParts(name) {
   // ge-0/0/12 or xe-1/2/3 or ae1
   if (!name) return {};
@@ -60,35 +66,31 @@ function renderInitialVC() {
 }
 
 function showView(name) {
-  const views = ["switch", "approvals", "audit"];
+  ["switch", "approvals", "audit", "rollback"].forEach(v => {
+    const el = document.getElementById(`view-${v}`);
+    if (el) el.classList.toggle("hidden", v !== name);
 
-  views.forEach(v => {
-    document
-      .getElementById(`view-${v}`)
-      ?.classList.toggle("hidden", v !== name);
-
-    document
-      .getElementById(`tab-${v}`)
-      ?.classList.toggle("active", v === name);
+    const tab = document.getElementById(`tab-${v}`);
+    if (tab) tab.classList.toggle("active", v === name);
   });
 
   if (name === "approvals") {
     loadApprovals();
-    return;
   }
 
   if (name === "audit") {
-    load_audit();   // 👈 straks je audit loader
-    return;
+    load_audit();
   }
 
   if (name === "switch") {
     loadPending();
-
-    // alleen redraw als data al bestaat
     if (CURRENT_DEVICE && CURRENT_SWITCH_PORTS) {
       drawPorts(CURRENT_SWITCH_PORTS, CURRENT_DEVICE);
     }
+  }
+  
+  if (name === "rollback") {
+    loadRollbackDevices();
   }
 }
 
@@ -309,7 +311,9 @@ async function openModalForPort(port) {
     try {
       const live = await fetchInterfaceLiveClient(currentSwitch, port.name, port);
       if (live) {
-        if (descr) descr.value = live.description || descr.value || "";
+        if (descr && live.description !== undefined) {
+          descr.value = live.description;
+        }
         if (modeSel) modeSel.value = live.mode || modeSel.value;
         if (accessSel && live.access_vlan) accessSel.value = live.access_vlan;
         if (trunkSel && live.trunk_vlans) {
@@ -359,31 +363,6 @@ async function openModalForPort(port) {
 
   // show modal
   modal.classList.remove("hidden");
-
-  const tabAudit  = document.getElementById("tab-audit");
-  const tabConfig = document.getElementById("tab-config");
-  const panelCfg  = document.getElementById("tab-panel-config");
-  const panelAud  = document.getElementById("tab-panel-audit");
-
-  if (tabAudit && tabConfig) {
-    tabAudit.onclick = () => {
-      tabAudit.classList.add("active");
-      tabConfig.classList.remove("active");
-
-      panelAud.classList.remove("hidden");
-      panelCfg.classList.add("hidden");
-
-      load_audit(port); // 🔥 HIER
-    };
-
-    tabConfig.onclick = () => {
-      tabConfig.classList.add("active");
-      tabAudit.classList.remove("active");
-
-      panelCfg.classList.remove("hidden");
-      panelAud.classList.add("hidden");
-    };
-  }
   
   // attach submit handler (one-time)
   const form = document.getElementById("configForm");
@@ -453,7 +432,7 @@ async function openModalForPort(port) {
       if (!r.ok) {
         alert("Failed to create change request");
       } else {
-        alert("Change request created (pending approval)");
+        // alert("Change request created (pending approval)");
         // optionally close modal and fast-repoll to show candidate state if you want
         modal.classList.add("hidden");
       }
@@ -521,13 +500,34 @@ document.addEventListener("keydown", (e) => {
 // bootstrap
 document.addEventListener("DOMContentLoaded", () => {
 
-  document.getElementById("tab-switch").onclick = () => showView("switch");
-  document.getElementById("tab-approvals").onclick = () => showView("approvals");
-  document.getElementById("tab-audit").onclick = () => showView("audit");
+  document.getElementById("tab-switch").onclick =
+    () => showView("switch");
 
-  renderInitialVC();     // ✅ altijd iets tonen
-  loadSwitches();        // vult dropdown
+  document.getElementById("tab-approvals").onclick =
+    () => showView("approvals");
+    
+  document.getElementById("tab-audit").onclick = () => {
+    initAuditTable();
+    showView("audit");
+  };
+  document.getElementById("tab-rollback").onclick = () => {
+    showView("rollback");
+  };
+
+  // ✅ audit filter hooks (bestaan alleen in approvals view)
+  const auditDevice = document.getElementById("audit-device");
+  const auditIface  = document.getElementById("audit-interface");
+  const auditAction = document.getElementById("audit-action");
+  
+  if (auditDevice) auditDevice.onchange  = applyAuditFilters;
+  if (auditIface)  auditIface.oninput    = debounce(applyAuditFilters, 200);
+  if (auditAction) auditAction.onchange  = applyAuditFilters;
+  
+
+  renderInitialVC();
+  loadSwitches();
   loadPending();
+  loadAuditDevices();
   showView("switch");
 });
 
@@ -639,22 +639,26 @@ async function approveRequest(id) {
     // fallback: niets terug
   }
 
-  // 🔥 refresh pending map
-  await loadPending();
-
-  // 🔄 refresh switch data (cached first)
-  await reloadAllPorts();
-
-  // ✨ highlight approved port
-  if (approvedReq) {
-    flashApprovedPort(
-      approvedReq.device,
-      approvedReq.interface
+  try {
+    const live = await fetch(
+      `/api/switches/${approvedReq.device}/interfaces/retrieve`,
+      { method: "POST" }
     );
+  
+    if (live.ok) {
+      const data = await live.json();
+      mergeAndRedrawPorts(approvedReq.device, data.interfaces || data);
+    }
+  } catch (e) {
+    console.error("Live refresh failed after approve", e);
   }
-
+  
+  // ✨ Highlight approved port
+  flashApprovedPort(approvedReq.device, approvedReq.interface);
+  
   // refresh approvals list
   await loadApprovals();
+  load_audit(); // 👈 audit altijd vers
 }
 
 async function rejectRequest(id) {
@@ -670,6 +674,7 @@ async function rejectRequest(id) {
   });
 
   await loadApprovals();
+  load_audit(); // 👈 audit altijd vers
 }
 
 function setFetchStatus(text, cls = "loading") {
@@ -677,20 +682,6 @@ function setFetchStatus(text, cls = "loading") {
   el.textContent = text;
   el.className = "status " + cls;
 }
-
-// async function loadInterfaces(device) {
-//   try {
-//     const r = await fetch(`/api/switches/${device}/interfaces`);
-//     const data = await r.json();
-
-//     setFetchStatus("✅ Switch data geladen", "ok");
-
-//     mergeAndRedrawPorts(device, data);
-
-//   } catch {
-//     setFetchStatus("⚠️ Kan switch niet ophalen", "error");
-//   }
-// }
 
 function allPhysicalPortsVC(members = 2) {
   const ports = [];
@@ -856,6 +847,7 @@ function diffObject(oldCfg = {}, newCfg = {}) {
   );
 }
 
+
 function fmtVal(v) {
   if (v === undefined || v === null) return "";
   if (Array.isArray(v)) return v.join(",") || "";
@@ -868,6 +860,14 @@ function isPresent(v) {
   if (v === undefined || v === null) return false;
   if (Array.isArray(v)) return v.length > 0;
   return String(v).trim().length > 0;
+}
+
+function debounce(fn, delay) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), delay);
+  };
 }
 
 function renderDiff(oldCfg, newCfg) {
@@ -1001,36 +1001,238 @@ function setSwitchButtons(enabled) {
     .forEach(b => b.disabled = !enabled);
 }
 
-async function load_audit(device = "") {
-  const res = await fetch(
-    `/api/audit${device ? `?device=${device}` : ""}`,
-    { headers: authHeaders }
-  );
+async function load_audit() {
+  const device = document.getElementById("audit-device")?.value;
+  const iface = document.getElementById("audit-interface")?.value;
 
-  const data = await res.json();
+  const params = new URLSearchParams();
+  if (device) params.set("device", device);
+  if (iface) params.set("interface", iface);
 
-  const body = document.getElementById("auditTableBody");
-  const empty = document.getElementById("no-audit");
+  const res = await fetch(`/api/audit?${params.toString()}`, {
+    headers: authHeaders()
+  });
 
-  body.innerHTML = "";
-
-  if (!data.length) {
-    empty.classList.remove("hidden");
+  if (!res.ok) {
+    console.error("audit load failed");
     return;
   }
 
-  empty.classList.add("hidden");
+  const rows = await res.json();
+  renderAudit(rows);
+}
 
-  for (const row of data) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${new Date(row.updated_at || row.created_at).toLocaleString()}</td>
-      <td>${row.device}</td>
-      <td>${row.interface}</td>
-      <td class="status ${row.status}">${row.status}</td>
-      <td>${row.approver || row.requester}</td>
-      <td>${row.comment || ""}</td>
+async function loadAuditDevices() {
+  const sel = document.getElementById("audit-device");
+  if (!sel) return;
+
+  const res = await fetch("/api/switches");
+  if (!res.ok) return;
+
+  const list = await res.json();
+
+  list.forEach(d => {
+    const o = document.createElement("option");
+    o.value = d.name;
+    o.textContent = d.name;
+    sel.appendChild(o);
+  });
+}
+
+function renderAudit(rows) {
+  if (!auditDT) initAuditTable();
+  auditDT.clear();
+
+  rows.forEach(r => {
+    const ts = new Date(r.timestamp);
+    const epoch = ts.getTime();
+    const pretty = ts.toLocaleString("nl-NL");
+
+    const cls = `audit-${r.action}`;
+    const icon = {
+      approve: "✔️",
+      reject: "❌",
+      apply_success: "⚙️",
+      apply_failed: "⚠️"
+    }[r.action] || "ℹ️";
+
+    // één kolom voor tijd
+    const timelineCell = `
+      <div class="audit-timeline" data-epoch="${epoch}">
+        <div class="timeline-dot ${cls}"></div>
+        <div class="timeline-content">
+          <div class="timeline-time">${pretty}</div>
+        </div>
+      </div>
     `;
-    body.appendChild(tr);
+
+    auditDT.row.add([
+      timelineCell,
+      r.actor,
+      `<span class="audit-event ${cls}">${icon} ${r.action}</span>`,
+      r.device,
+      r.interface ?? "",
+      r.comment ?? ""
+    ]);
+  });
+
+  auditDT.draw();
+
+  // clickable rows
+  $("#audit-table tbody tr").off("click").on("click", function () {
+    const idx = auditDT.row(this).index();
+    openAuditDetail(rows[idx]);
+  });
+}
+
+function applyAuditFilters() {
+  if (!auditDT) return;
+
+  const dev   = document.getElementById("audit-device").value.trim();
+  const iface = document.getElementById("audit-interface").value.trim().toLowerCase();
+  const act   = document.getElementById("audit-action").value.trim();
+
+  auditDT.rows().every(function () {
+    const row = this.data();
+    const rowNode = this.node();
+
+    const rowDevice = row[3];
+    const rowIface  = (row[4] || "").toLowerCase();
+    const rowActionHTML = row[2];         // "<span class='audit-event audit-approve'>..."
+    const rowActionMatch = rowActionHTML.match(/audit\-([a-z_]+)/);
+    const rowAction = rowActionMatch ? rowActionMatch[1] : "";
+
+    let visible = true;
+
+    if (dev   && rowDevice !== dev) visible = false;
+    if (iface && !rowIface.includes(iface)) visible = false;
+    if (act   && rowAction !== act) visible = false;
+
+    rowNode.style.display = visible ? "" : "none";
+  });
+}
+
+
+// ================== ROLLBACK HANDLERS ==================
+
+async function loadRollbackDevices() {
+  const sel = document.getElementById("rb-device");
+  sel.innerHTML = `<option value="">Select a device…</option>`;
+
+  const res = await fetch("/api/inventory");
+  if (!res.ok) return;
+
+  const devices = await res.json();
+
+  devices.forEach(d => {
+    const opt = document.createElement("option");
+    opt.value = d.name;
+    opt.textContent = d.name;
+    sel.appendChild(opt);    // ✅ correcte target
+  });
+
+  sel.onchange = loadRollbackList;
+}
+
+async function loadRollbackList() {
+  const dev = document.getElementById("rb-device").value;
+  const list = document.getElementById("rb-list");
+  const diff = document.getElementById("rb-diff");
+
+  list.innerHTML = "";
+  diff.textContent = "Select a commit…";
+
+  if (!dev) return;
+
+  const res = await fetch(`/api/rollback/${dev}`, { headers: authHeaders() });
+  const commits = await res.json();
+
+  commits.forEach(item => {
+    const li = document.createElement("li");
+    li.textContent = `${item.index}: ${item.timestamp} — ${item.user}`;
+    li.dataset.rb = item.index;
+
+    li.onclick = () => loadRollbackDiff(dev, item.index, li);
+
+    list.appendChild(li);
+  });
+}
+
+async function loadRollbackDiff(device, index, li) {
+  document.querySelectorAll(".rb-list li").forEach(n => n.classList.remove("selected"));
+  li.classList.add("selected");
+
+  const diffBox = document.getElementById("rb-diff");
+  diffBox.textContent = "Loading…";
+
+  const res = await fetch(`/api/rollback/${device}/${index}/diff`,
+    { headers: authHeaders() }
+  );
+
+  if (!res.ok) {
+    diffBox.textContent = "Failed to load diff.";
+    return;
+  }
+
+  const txt = await res.text();
+  diffBox.textContent = txt || "(empty diff)";
+}
+
+function initAuditTable() {
+  if (!auditDT) {
+    auditDT = new DataTable("#audit-table", {
+      paging: true,
+      lengthChange: false,
+      searching: false,
+      info: false,
+      ordering: true,
+      pageLength: 15,
+      stripeClasses: [],
+      columnDefs: [
+        {
+          targets: 0,
+          orderable: true,
+          type: "num",
+          render: function(data, type, row) {
+            if (type === "sort") {
+              // extract epoch
+              const el = document.createElement("div");
+              el.innerHTML = data;
+              return el.querySelector(".audit-timeline")?.dataset.epoch ?? 0;
+            }
+            return data;
+          }
+        }
+      ]
+    });
   }
 }
+
+// function openAuditDetail(row) {
+//   const modal = document.getElementById("auditDetailModal");
+//   const box = document.getElementById("auditDetailBox");
+
+//   box.textContent = JSON.stringify(row, null, 2);
+  
+//   modal.classList.remove("hidden");
+// }
+
+function openAuditDetail(row) {
+  const modal = document.getElementById("auditDetailModal");
+  const box   = document.getElementById("auditDetailBox");
+
+  box.innerHTML = `
+    <div><b>Device:</b> ${row.device}</div>
+    <div><b>Interface:</b> ${row.interface}</div>
+    <div><b>Action:</b> ${row.action}</div>
+    <div><b>User:</b> ${row.actor}</div>
+    <hr>
+    <pre>${JSON.stringify(row, null, 2)}</pre>
+  `;
+
+  modal.classList.remove("hidden");
+}
+
+document.getElementById("auditDetailClose").onclick = () => {
+  document.getElementById("auditDetailModal").classList.add("hidden");
+};

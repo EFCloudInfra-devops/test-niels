@@ -6,7 +6,10 @@
 
   <link rel="stylesheet" href="style.css" />
   <script type="module" src="app.js"></script>
-</head>
+  <link rel="stylesheet" href="https://cdn.datatables.net/2.1.2/css/dataTables.dataTables.min.css">
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/2.1.2/js/dataTables.min.js"></script>
+  </head>
 <body>
 
 <!-- ================= HEADER ================= -->
@@ -17,6 +20,7 @@
     <button id="tab-switch" class="active">Switch config</button>
     <button id="tab-approvals">Approvals</button>
     <button id="tab-audit">Audit</button>
+    <button id="tab-rollback">Rollback</button>
   </nav>
   </div>
 </header>
@@ -24,141 +28,202 @@
 <!-- ================= MAIN ================= -->
 <main>
 
-<!-- ===== SWITCH VIEW ===== -->
-<section id="view-switch">
-  <div class="toolbar">
+  <!-- ===== SWITCH VIEW ===== -->
+  <section id="view-switch">
+    <div class="toolbar">
 
-    <label for="switch-select">Switch</label>
-    <select id="deviceSelect">
-      <option value="" disabled selected>Select a switch…</option>
-    </select>    
+      <label for="switch-select">Switch</label>
+      <select id="deviceSelect">
+        <option value="" disabled selected>Select a switch…</option>
+      </select>    
 
-    <div class="switch-controls">
-      <div class="left">
-        <button id="btn-refresh-interfaces" data-requires-switch disabled>Refresh Interfaces</button>
+      <div class="switch-controls">
+        <div class="left">
+          <button id="btn-refresh-interfaces" data-requires-switch disabled>Refresh Interfaces</button>
+        </div>
+      
+        <div class="right">
+          <button id="btn-refresh-vlans" data-requires-switch disabled>Refresh VLANs</button>
+          <span id="vlan-cache-status" class="hidden"></span>
+        </div>
+      </div>
+    </div>
+    
+    <div id="switch-grid-wrapper">
+      <div id="grid-overlay" class="hidden">
+        <div class="spinner"></div>
+        <div id="fetch-status" class="status loading">
+          ⏳ Retrieving switch configuration…
+        </div>
+      </div>
+      
+
+      <!-- MEMBER 0 -->
+      <div class="vc-member">
+        <div class="member-header">
+          Member 0
+        </div>
+      
+        <div class="member-faceplate">
+          <div class="ge-block">
+            <div id="m0-ge-top" class="ge-row"></div>
+            <div id="m0-ge-bottom" class="ge-row"></div>
+          </div>
+      
+          <div id="m0-xe" class="xe-row"></div>
+        </div>
+      </div>
+      
+      <!-- MEMBER 1 -->
+      <div class="vc-member">
+        <div class="member-header">
+          Member 1
+        </div>
+      
+        <div class="member-faceplate">
+          <div class="ge-block">
+            <div id="m1-ge-top" class="ge-row"></div>
+            <div id="m1-ge-bottom" class="ge-row"></div>
+          </div>
+      
+          <div id="m1-xe" class="xe-row"></div>
+        </div>
       </div>
     
-      <div class="right">
-        <button id="btn-refresh-vlans" data-requires-switch disabled>Refresh VLANs</button>
-        <span id="vlan-cache-status" class="hidden"></span>
+      <!-- AE -->
+      <h3>Aggregates (LACP)</h3>
+      <div id="grid-ae" class="ae-row"></div>
+    </div>
+
+    <div class="port-legend">
+      <div><span class="legend-box oper-up"></span> Oper up</div>
+      <div><span class="legend-box oper-down"></span> Oper down</div>
+      <div><span class="legend-box unconfigured"></span> Unconfigured</div>
+      <div><span class="legend-box pending"></span> Pending approval</div>
+      <div><span class="legend-box approved"></span> Approved</div>
+      <div><span class="legend-box lacp"></span> LACP bundle</div>
+    </div>
+  </section>
+
+  <!-- ===== APPROVALS VIEW ===== -->
+  <section id="view-approvals" class="hidden">
+
+    <div class="container approvals">
+
+      <div class="approvals-header">
+        <h2>Pending change requests</h2>
+        <span class="approvals-count" id="approvals-count">0</span>
       </div>
+
+      <div id="approvalsList" class="approvals-list"></div>
+
+      <div id="no-approvals" class="empty-state hidden">
+        ✅ No pending approvals
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- ===== AUDIT VIEW ===== -->
+  <section id="view-audit" class="hidden">
+
+    <div class="container audit">
+
+      <div class="audit-header">
+        <h2>Audit Log</h2>
+      </div>
+
+      <div class="audit-toolbar">
+        <div class="audit-filter-group">
+          <select id="audit-device" class="audit-select">
+            <option value="">All devices</option>
+          </select>
+      
+          <input id="audit-interface" class="audit-input" placeholder="Interface (ge-0/0/1)" />
+      
+          <select id="audit-action" class="audit-select">
+            <option value="">All events</option>
+            <option value="approve">Approve</option>
+            <option value="reject">Reject</option>
+            <option value="apply_success">Apply Success</option>
+            <option value="apply_failed">Apply Failed</option>
+          </select>
+        </div>
+      </div>      
+
+      <div class="audit-table-wrapper">
+        <table id="audit-table" class="compact hover stripe">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Event</th>
+              <th>Device</th>
+              <th>Interface</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="audit-body"></tbody>
+        </table>
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- ===== ROLLBACK VIEW ===== -->
+  <section id="view-rollback" class="hidden">
+
+    <div class="container rollback">
+      <h2>Rollback / Commit history</h2>
+
+      <div class="rollback-filters">
+        <select id="rb-device">
+          <option value="">Select a device…</option>
+        </select>
+      </div>
+
+      <div class="rollback-layout">
+
+        <!-- LEFT: commit list -->
+        <div class="rollback-list">
+          <h3>Commits</h3>
+          <ul id="rb-list" class="rb-list"></ul>
+        </div>
+
+        <!-- RIGHT: diff -->
+        <div class="rollback-diff">
+          <h3>Diff</h3>
+          <pre id="rb-diff" class="rb-diff-box">Select a commit…</pre>
+        </div>
+
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ===== AUDIT DETAIL MODAL ===== -->
+  <div id="auditDetailModal" class="modal hidden">
+    <div class="modal-content">
+
+      <div class="modal-header">
+        <h3>Audit event</h3>
+      </div>
+
+      <div class="modal-body">
+        <pre id="auditDetailBox" class="audit-detail-box"></pre>
+      </div>
+
+      <div class="modal-actions">
+        <button id="auditDetailClose" class="primary">Close</button>
+      </div>
+
     </div>
   </div>
   
-  <div id="switch-grid-wrapper">
-    <div id="grid-overlay" class="hidden">
-      <div class="spinner"></div>
-      <div id="fetch-status" class="status loading">
-        ⏳ Retrieving switch configuration…
-      </div>
-    </div>
-    
-
-    <!-- MEMBER 0 -->
-    <div class="vc-member">
-      <div class="member-header">
-        Member 0
-      </div>
-    
-      <div class="member-faceplate">
-        <div class="ge-block">
-          <div id="m0-ge-top" class="ge-row"></div>
-          <div id="m0-ge-bottom" class="ge-row"></div>
-        </div>
-    
-        <div id="m0-xe" class="xe-row"></div>
-      </div>
-    </div>
-    
-    <!-- MEMBER 1 -->
-    <div class="vc-member">
-      <div class="member-header">
-        Member 1
-      </div>
-    
-      <div class="member-faceplate">
-        <div class="ge-block">
-          <div id="m1-ge-top" class="ge-row"></div>
-          <div id="m1-ge-bottom" class="ge-row"></div>
-        </div>
-    
-        <div id="m1-xe" class="xe-row"></div>
-      </div>
-    </div>
-  
-    <!-- AE -->
-    <h3>Aggregates (LACP)</h3>
-    <div id="grid-ae" class="ae-row"></div>
-  </div>
-
-  <div class="port-legend">
-    <div><span class="legend-box oper-up"></span> Oper up</div>
-    <div><span class="legend-box oper-down"></span> Oper down</div>
-    <div><span class="legend-box unconfigured"></span> Unconfigured</div>
-    <div><span class="legend-box pending"></span> Pending approval</div>
-    <div><span class="legend-box approved"></span> Approved</div>
-    <div><span class="legend-box lacp"></span> LACP bundle</div>
-  </div>
-</section>
-
-<!-- ===== APPROVALS VIEW ===== -->
-<section id="view-approvals" class="hidden">
-
-  <div class="container approvals">
-
-    <div class="approvals-header">
-      <h2>Pending change requests</h2>
-      <span class="approvals-count" id="approvals-count">0</span>
-    </div>
-
-    <div id="approvalsList" class="approvals-list"></div>
-
-    <div id="no-approvals" class="empty-state hidden">
-      ✅ No pending approvals
-    </div>
-
-  </div>
-
-</section>
-
-<!-- ===== AUDIT VIEW ===== -->
-<section id="view-audit" class="hidden">
-
-  <div class="container audit">
-
-    <div class="audit-header">
-      <h2>Audit log</h2>
-
-      <select id="audit-device-filter">
-        <option value="">All devices</option>
-      </select>
-    </div>
-
-    <table class="audit-table">
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Device</th>
-          <th>Interface</th>
-          <th>Action</th>
-          <th>User</th>
-          <th>Comment</th>
-        </tr>
-      </thead>
-      <tbody id="auditTableBody">
-        <!-- rows injected by JS -->
-      </tbody>
-    </table>
-
-    <div id="no-audit" class="empty-state hidden">
-      📭 No audit records
-    </div>
-
-  </div>
-
-</section>
-
 </main>
+
 
 <!-- ================= MODAL ================= -->
 <div id="modal" class="modal hidden">

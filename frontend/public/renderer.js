@@ -45,16 +45,6 @@ function parseIfname(name) {
   return null;
 }
 
-// function positionTooltip(t, ev) {
-//   const pad = 8;
-//   let left = ev.pageX + pad, top = ev.pageY + pad;
-//   const r = t.getBoundingClientRect();
-//   if (left + r.width > window.innerWidth) left = ev.pageX - r.width - pad;
-//   if (top + r.height > window.innerHeight) top = ev.pageY - r.height - pad;
-//   t.style.left = left + "px";
-//   t.style.top = top + "px";
-// }
-
 // ---------- client-side live fetch with TTL & safety ----------
 export async function fetchInterfaceLiveClient(device, ifname, portObj = null) {
   if (!device) return null;
@@ -88,10 +78,62 @@ export function clearVlanHighlight() {
 }
 
 // ---------- port tile ----------
-function createPortTile(port) {
+// function createPortTile(port) {
+//   const el = document.createElement("div");
+//   el.className = "port";
+//   el.dataset.ifname = port.name;
+
+//   const label = document.createElement("div");
+//   label.className = "label-top";
+//   el.appendChild(label);
+
+//   const dot = document.createElement("div");
+//   dot.className = "dot";
+//   el.appendChild(dot);
+
+//   el.addEventListener("mouseenter", ev => {
+//     if (port.type === "ae") highlightBundle(port.name);
+//     if (port.bundle) {
+//       document
+//         .querySelectorAll(`[data-bundle="${port.bundle}"]`)
+//         .forEach(p => p.classList.add("lacp-highlight"));
+//     }
+
+//     showTooltip(`
+//       <strong>${port.name}</strong>
+//       <div>Status: ${
+//         port.oper_up === true ? "up" :
+//         port.oper_up === false ? "down" :
+//         "cached"
+//       }</div>
+//       <div>Mode: ${port.mode ?? "—"}</div>
+//       <div>Access VLAN: ${port.access_vlan ?? "—"}</div>
+//       <div>Bundle: ${port.bundle ?? "—"}</div>
+//       <div>Description: ${port.description ?? "—"}</div>
+//     `, ev);
+//   });
+
+//   el.addEventListener("mousemove", moveTooltip);
+//   el.addEventListener("mouseleave", () => {
+//     hideTooltip();
+//     clearBundle();
+//     document.querySelectorAll(".lacp-highlight")
+//       .forEach(p => p.classList.remove("lacp-highlight"));
+//   });
+
+//   el.addEventListener("click", () => {
+//     window.openModalForPort?.(port);
+//   });
+
+//   return el;
+// }
+function createPortTile(initialPort) {
   const el = document.createElement("div");
   el.className = "port";
-  el.dataset.ifname = port.name;
+  el.dataset.ifname = initialPort.name;
+
+  // store initial data, but will be updated by updatePortTile()
+  el.dataset.port = JSON.stringify(initialPort);
 
   const label = document.createElement("div");
   label.className = "label-top";
@@ -102,6 +144,8 @@ function createPortTile(port) {
   el.appendChild(dot);
 
   el.addEventListener("mouseenter", ev => {
+    const port = JSON.parse(el.dataset.port || "{}");
+
     if (port.type === "ae") highlightBundle(port.name);
     if (port.bundle) {
       document
@@ -109,32 +153,84 @@ function createPortTile(port) {
         .forEach(p => p.classList.add("lacp-highlight"));
     }
 
-    showTooltip(`
-      <strong>${port.name}</strong>
-      <div>Status: ${port.oper_up ? "up" : "down"}</div>
-      <div>Mode: ${port.mode ?? "—"}</div>
-      <div>Access VLAN: ${port.access_vlan ?? "—"}</div>
-      <div>Bundle: ${port.bundle ?? "—"}</div>
-    `, ev);
+    const aeMembers =
+      port.type === "ae"
+        ? [...document.querySelectorAll(`[data-bundle="${port.name}"]`)]
+            .map(e => e.dataset.ifname)
+            .join(", ") || "None"
+        : null;
+
+    showTooltip(
+      `
+      <div class="tt-title"><strong>${port.name}</strong></div>
+
+      ${
+        port.description
+          ? `<div class="tt-desc">${port.description}</div>`
+          : `<div class="tt-desc tt-muted">No description</div>`
+      }
+
+      <div class="tt-line"><strong>Status:</strong> ${
+        port.oper_up === true ? "Up" :
+        port.oper_up === false ? "Down" :
+        "Cached"
+      }</div>
+
+      <div class="tt-line"><strong>Mode:</strong> ${port.mode ?? "—"}</div>
+
+      <div class="tt-line"><strong>Access VLAN:</strong> ${port.access_vlan ?? "—"}</div>
+
+      <div class="tt-line"><strong>Native VLAN:</strong> ${port.native_vlan ?? "—"}</div>
+
+      <div class="tt-line"><strong>Trunk VLANs:</strong> ${
+        Array.isArray(port.trunk_vlans) && port.trunk_vlans.length
+          ? port.trunk_vlans.join(", ")
+          : "—"
+      }</div>
+
+      <div class="tt-line"><strong>Bundle:</strong> ${port.bundle ?? "—"}</div>
+
+      ${
+        port.type === "ae"
+          ? `<div class="tt-line"><strong>AE members:</strong> ${aeMembers}</div>`
+          : ""
+      }
+
+      ${
+        port.vc_port
+          ? `<div class="tt-line"><strong>VC Status:</strong> ${
+              port.vc_status || "Up"
+            }</div>`
+          : ""
+      }
+      `,
+      ev
+    );
   });
 
   el.addEventListener("mousemove", moveTooltip);
+
   el.addEventListener("mouseleave", () => {
     hideTooltip();
     clearBundle();
-    document.querySelectorAll(".lacp-highlight")
+    document
+      .querySelectorAll(".lacp-highlight")
       .forEach(p => p.classList.remove("lacp-highlight"));
   });
 
   el.addEventListener("click", () => {
+    const port = JSON.parse(el.dataset.port || "{}");
     window.openModalForPort?.(port);
   });
 
   return el;
 }
 
+
 function updatePortTile(el, port) {
   el.className = "port"; // reset safe baseline
+  el.dataset.port = JSON.stringify(port);
+  el.dataset.description = port.description ?? "";
 
   if (port._source === "cache") el.classList.add("cached");
   if (port._source === "live") el.classList.add("live");
@@ -179,6 +275,7 @@ function updatePortTile(el, port) {
   if (Array.isArray(port.trunk_vlans)) vlans.push(...port.trunk_vlans);
   if (vlans.length) el.dataset.vlan = vlans.join(" ");
   else delete el.dataset.vlan;
+
 }
 
 // ---------- main renderer ----------
@@ -348,3 +445,23 @@ document.addEventListener("click", e => {
     e.preventDefault();
   }
 }, true);
+
+function renderAudit(rows) {
+  const tbody = document.getElementById("audit-body");
+  if (!tbody) return;
+
+  tbody.innerHTML = "";
+
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${new Date(r.timestamp).toLocaleString()}</td>
+      <td>${r.actor}</td>
+      <td>${r.action}</td>
+      <td>${r.device || "-"}</td>
+      <td>${r.interface || "-"}</td>
+      <td>${r.comment || ""}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}

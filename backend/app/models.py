@@ -9,6 +9,7 @@ class RequestStatus(enum.Enum):
     pending = "pending"
     approved = "approved"
     rejected = "rejected"
+    failed = "failed"
 
 class ChangeRequest(Base):
     __tablename__ = "change_requests"
@@ -66,12 +67,13 @@ class AuditLog(Base):
     id = Column(Integer, primary_key=True)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    actor = Column(String, nullable=False)           # wie
-    action = Column(String, nullable=False)          # approve / reject
+    actor = Column(String, nullable=False)
+    action = Column(String, nullable=False)     # approve / reject / apply_success / apply_failed
+
     device = Column(String, nullable=False)
     interface = Column(String, nullable=True)
 
     request_id = Column(Integer, ForeignKey("change_requests.id"))
     comment = Column(String, nullable=True)
 
-    payload = Column(JSON, nullable=True)            # snapshot / diff / metadata
+    payload = Column(JSON, nullable=True)
