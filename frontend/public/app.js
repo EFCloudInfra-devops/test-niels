@@ -669,34 +669,35 @@ async function loadApprovals() {
     // ===== diff / delete-melding =====
     const diffBox = document.createElement("div");
     diffBox.className = "approval-diff";
-
+    
     const pre = document.createElement("pre");
-
+    
     if (req.type === "delete") {
-      // ⭐ Speciaal diff-blok voor deletes
+      // ⭐ Speciaal diff-blok voor deletes — OVERSCHRIJFT ALLES
       pre.innerHTML = `
-<div class="diff-line diff-remove">- DELETE INTERFACE ${req.interface}</div>
-`.trim();
+    <div class="diff-line diff-remove">- Delete interface <strong>${req.interface}</strong></div>
+      `.trim();
     } else {
-      // normale diff
+      // ⭐ gewone diff
       const before = req.current_config || {};
       const after = req.config || {};
-
+    
       const diffs = diffObject(before, after);
-
+    
       if (diffs.length === 0) {
-        pre.innerHTML = `<div class="diff-line">No changes</div>`;
+        pre.innerHTML = `<div class="diff-line dim">No changes</div>`;
       } else {
-        pre.textContent = diffs
-          .map(d =>
-            (d.old !== undefined ? `- ${d.key}: ${d.old}\n` : "") +
-            (d.new !== undefined ? `+ ${d.key}: ${d.new}` : "")
-          )
-          .join("\n\n");
+        pre.innerHTML = diffs
+          .map(d => `
+    <div class="diff-line diff-remove">${d.old !== undefined ? `- ${d.key}: ${d.old}` : ""}</div>
+    <div class="diff-line diff-add">${d.new !== undefined ? `+ ${d.key}: ${d.new}` : ""}</div>
+          `.trim())
+          .join("");
       }
     }
-
+    
     diffBox.appendChild(pre);
+    
 
     // ===== actions =====
     const actions = document.createElement("div");
