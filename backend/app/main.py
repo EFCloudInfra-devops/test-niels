@@ -1,5 +1,5 @@
 # main.py
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 from typing import Optional, List
 from .devices import load_devices, get_device
@@ -10,6 +10,7 @@ import traceback
 import json
 from datetime import datetime
 from .models import InterfaceCache, CachedVlan, AuditLog
+import xml.sax.saxutils as sax
 
 def write_audit(
     db: Session,
@@ -174,33 +175,93 @@ def approve_request(
     if req.status != models.RequestStatus.pending:
         raise HTTPException(400, "Request not pending")
 
-    # ✅ mark approved
+    # mark approved
     req.status = models.RequestStatus.approved
     req.approver = user["username"]
     if comment:
         req.comment = comment
 
-    db.commit()
-    # APPLY
-    try:
-        device_info = get_device(req.device)
+    write_audit(
+        db,
+        actor=user["username"],
+        action="approve",
+        device=req.device,
+        interface=req.interface,
+        request_id=req.id,
+        comment=comment,
+        payload={"status": "approved", "type": req.type}
+    )
 
-        with netconf.connect(device_info) as nc:
-            netconf.apply_interface_config(
-                nc,
+    db.commit()
+
+    # ----------------------------
+    # APPLY
+    # ----------------------------
+    try:
+        dev = get_device(req.device)
+
+        # ---- DELETE FLOW ----
+        if getattr(req, "type", None) == "delete":
+            with netconf.connect(dev) as nc:
+                xml = f"""
+                <config>
+                  <configuration>
+                    <interfaces>
+                      <interface operation="delete">
+                        <name>{sax.escape(req.interface)}</name>
+                      </interface>
+                    </interfaces>
+                  </configuration>
+                </config>
+                """
+                nc.edit_config(target="candidate", config=xml)
+                nc.commit()
+
+            write_audit(
+                db,
+                actor="system",
+                action="delete_success",
+                device=req.device,
                 interface=req.interface,
-                config=req.config
+                request_id=req.id,
+                payload={"delete": True}
             )
 
-        write_audit(
-            db,
-            actor="system",
-            action="apply_success",
-            device=req.device,
-            interface=req.interface,
-            request_id=req.id,
-            payload={"config": req.config}
-        )
+        # ---- MODIFY FLOW ----
+        else:
+            with netconf.connect(dev) as nc:
+                netconf.apply_interface_config(
+                    nc,
+                    interface=req.interface,
+                    config=req.config
+                )
+
+            write_audit(
+                db,
+                actor="system",
+                action="apply_success",
+                device=req.device,
+                interface=req.interface,
+                request_id=req.id,
+                payload={"config": req.config}
+            )
+
+        # ----------------------------
+        # DIRECT SERVER-SIDE REFRESH
+        # ----------------------------
+        from app.jobs.refresh_interfaces import refresh_interfaces_for_device
+        try:
+            refresh_interfaces_for_device(req.device)
+        except Exception as e:
+            write_audit(
+                db,
+                actor="system",
+                action="device_refresh_failed",
+                device=req.device,
+                interface=req.interface,
+                request_id=req.id,
+                comment=str(e)
+            )
 
     except Exception as e:
         req.status = models.RequestStatus.failed
@@ -215,27 +276,12 @@ def approve_request(
             interface=req.interface,
             request_id=req.id,
             comment=str(e),
-            payload={"config": req.config}
+            payload={"type": req.type}
         )
 
-        raise HTTPException(500, f"NETCONF apply failed: {e}")
-    
+        raise HTTPException(500, f"Apply failed: {e}")
+
     db.refresh(req)
-    
-    # ✅ audit: approved
-    write_audit(
-        db,
-        actor=user["username"],
-        action="approve",
-        device=req.device,
-        interface=req.interface,
-        request_id=req.id,
-        comment=comment,
-        payload={
-            "config": req.config,
-            "status": "approved"
-        }
-    )
     return req
 
 @app.post("/api/requests/{req_id}/reject")
@@ -498,3 +544,53 @@ def rollback_apply(
 
     except Exception as e:
         raise HTTPException(500, f"NETCONF rollback failed: {e}")
+    
+@app.post("/api/interface/{device}/{interface}/refresh")
+def refresh_single_interface(device: str, interface: str):
+    dev = get_device(device)
+
+    with netconf.connect(dev) as nc:
+        xml = netconf.get_single_interface(nc, interface)
+
+    # convert XML → parsed dict (zelfde parser als voor full retrieve)
+    parsed = netconf.parse_interface_xml(xml)
+
+    return {
+        "device": device,
+        "interface": interface,
+        "data": parsed
+    }
+
+@app.post("/api/requests/delete", status_code=200)
+def request_delete_interface(
+    device: str = Body(...),
+    interface: str = Body(...),
+    comment: Optional[str] = Body(None),
+    db: Session = Depends(get_db),
+    user=Depends(require_role(("admin",)))
+):
+    req = models.ChangeRequest(
+        device=device,
+        interface=interface,
+        type="delete",
+        status=models.RequestStatus.pending,
+        requester=user["username"],
+        config={},  # geen config nodig
+        comment=comment
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+
+    write_audit(
+        db,
+        actor=user["username"],
+        action="request_delete",
+        device=device,
+        interface=interface,
+        request_id=req.id,
+        comment=comment,
+        payload={"delete": True}
+    )
+
+    return req

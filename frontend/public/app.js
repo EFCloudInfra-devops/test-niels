@@ -12,6 +12,7 @@ let currentSwitch = window.currentSwitch = null;
 let pendingByInterface = {};
 let CURRENT_SWITCH_PORTS = null;
 let CURRENT_DEVICE = null;
+let CURRENT_PORT = null;
 let CURRENT_SWITCH_RENDER_STATE = null;
 let auditDT = null;
 
@@ -53,6 +54,14 @@ function portCompare(a, b) {
 
   // fallback to string compare
   return (a.name || "").localeCompare(b.name || "");
+}
+
+function showApplySpinner() {
+  document.getElementById("apply-overlay").classList.remove("hidden");
+}
+
+function hideApplySpinner() {
+  document.getElementById("apply-overlay").classList.add("hidden");
 }
 
 function renderInitialVC() {
@@ -233,6 +242,11 @@ function enrichPorts(ports, source, ts) {
 
 // --- modal logic: now allows opening unconfigured port for configuration
 async function openModalForPort(port) {
+  CURRENT_PORT = port;
+  CURRENT_DEVICE = currentSwitch;
+
+  clearModalDiff();
+
   // We allow opening modal for unconfigured ports too.
   // But we will not attempt to fetch 'live' info for them (unless configured).
   if (!currentSwitch) return;
@@ -461,7 +475,59 @@ async function openModalForPort(port) {
 
 window.openModalForPort = openModalForPort;
 
+document.getElementById("deleteInterfaceBtn").onclick = async function () {
+  if (!CURRENT_PORT || !CURRENT_DEVICE) {
+    alert("No active port.");
+    return;
+  }
+
+  const ifname = CURRENT_PORT.name;
+  const device = CURRENT_DEVICE;
+
+  if (!confirm(`Delete interface ${ifname} on ${device}? This will create an approval request.`))
+    return;
+
+  showApplySpinner();
+
+  try {
+    const r = await fetch(`/api/requests/delete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-User": "admin",
+        "X-Role": "admin"   // delete is admin-only
+      },
+      body: JSON.stringify({
+        device,
+        interface: ifname,
+        comment: "User requested delete"
+      })
+    });
+
+    const payload = await r.json().catch(() => null);
+
+    if (!r.ok) {
+      hideApplySpinner();
+      alert("Create delete request failed:\n" + (payload?.detail || "Unknown error"));
+      return;
+    }
+
+    hideApplySpinner();
+    closeModal();
+    clearModalDiff();
+
+    // refresh UI lists
+    loadApprovals();
+    load_audit();
+
+  } catch (e) {
+    hideApplySpinner();
+    alert("Delete request error: " + e);
+  }
+};
+
 function closeModal() {
+  clearModalDiff();
   const modal = document.getElementById("modal");
   const portInfo = document.getElementById("portInfo");
 
@@ -479,7 +545,6 @@ window.closeModal = closeModal;
 
 document.addEventListener("click", (e) => {
   if (
-    e.target.id === "cancelModalBtn" ||
     e.target.id === "closeModalBtn" ||
     e.target.classList.contains("modal-close")
   ) {
@@ -518,11 +583,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // ✅ audit filter hooks (bestaan alleen in approvals view)
   const auditDevice = document.getElementById("audit-device");
   const auditIface  = document.getElementById("audit-interface");
-  const auditAction = document.getElementById("audit-action");
-  
+
   if (auditDevice) auditDevice.onchange  = applyAuditFilters;
   if (auditIface)  auditIface.oninput    = debounce(applyAuditFilters, 200);
-  if (auditAction) auditAction.onchange  = applyAuditFilters;
   
 
   renderInitialVC();
@@ -623,6 +686,8 @@ async function loadApprovals() {
 async function approveRequest(id) {
   if (!confirm("Approve & apply this change?")) return;
 
+  showApplySpinner();
+
   const r = await fetch(`/api/requests/${id}/approve`, {
     method: "POST",
     headers: {
@@ -631,35 +696,60 @@ async function approveRequest(id) {
     }
   });
 
-  if (!r.ok) { alert("Approve failed"); return; }
+  let payload = null;
+  try { payload = await r.json(); } catch {}
 
-  let approvedReq = null;
-  try {
-    approvedReq = await r.json();
-  } catch {
-    // fallback: niets terug
+  // ----------------------------
+  // ❌ CASE 1: backend error
+  // ----------------------------
+  if (!r.ok) {
+    hideApplySpinner();
+    alert(`Approve failed:\n${payload?.detail || "Unknown error"}`);
+    await loadApprovals();
+    load_audit();
+    return;
   }
 
-  try {
-    const live = await fetch(
-      `/api/switches/${approvedReq.device}/interfaces/retrieve`,
-      { method: "POST" }
-    );
-  
-    if (live.ok) {
-      const data = await live.json();
-      mergeAndRedrawPorts(approvedReq.device, data.interfaces || data);
+  // ----------------------------
+  // ✔ CASE 2: succes
+  // ----------------------------
+  const approvedReq = payload || {};
+
+  // Always determine device:
+  const device =
+    approvedReq.device ||
+    document.getElementById("deviceSelect")?.value ||
+    null;
+
+  if (!device) {
+    console.warn("Approve success, but no device available for refresh");
+  } else {
+    try {
+      const live = await fetch(
+        `/api/switches/${device}/interfaces/retrieve`,
+        { method: "POST" }
+      );
+
+      if (live.ok) {
+        const data = await live.json();
+        mergeAndRedrawPorts(device, data.interfaces || data);
+      }
+    } catch (e) {
+      console.error("Live refresh failed after approve", e);
     }
-  } catch (e) {
-    console.error("Live refresh failed after approve", e);
   }
-  
-  // ✨ Highlight approved port
-  flashApprovedPort(approvedReq.device, approvedReq.interface);
-  
-  // refresh approvals list
+
+  if (approvedReq?.device && approvedReq?.interface) {
+    flashApprovedPort(approvedReq.device, approvedReq.interface);
+  }
+
+  // Always refresh lists
   await loadApprovals();
-  load_audit(); // 👈 audit altijd vers
+  load_audit();
+
+  // 🔥 FINALLY
+  clearModalDiff();
+  hideApplySpinner();
 }
 
 async function rejectRequest(id) {
@@ -970,7 +1060,23 @@ document.getElementById("btn-refresh-interfaces").onclick = async () => {
   const overlay = document.getElementById("grid-overlay");
   overlay.classList.remove("hidden");
   try {
-    const r = await fetch(`/api/switches/${currentSwitch}/interfaces/retrieve`, { method: "POST" });
+    if (approvedReq?.device && approvedReq?.interface) {
+      try {
+        const single = await fetch(
+          `/api/interface/${approvedReq.device}/${approvedReq.interface}/refresh`,
+          { method: "POST" }
+        );
+    
+        if (single.ok) {
+          const j = await single.json();
+          if (j?.data) {
+            mergeAndRedrawPorts(approvedReq.device, [j.data]);
+          }
+        }
+      } catch (e) {
+        console.error("Fast single-interface refresh failed", e);
+      }
+    }    
     if (!r.ok) throw new Error("retrieve failed");
     const data = await r.json();
     // endpoint returns { interfaces: [...] } — pass the full payload as 'live' override
@@ -1088,152 +1194,31 @@ function renderAudit(rows) {
 
 function applyAuditFilters() {
   if (!auditDT) return;
+  const table = $('#audit-table').DataTable();
 
   const dev   = document.getElementById("audit-device").value.trim();
   const iface = document.getElementById("audit-interface").value.trim().toLowerCase();
-  const act   = document.getElementById("audit-action").value.trim();
 
-  auditDT.rows().every(function () {
-    const row = this.data();
-    const rowNode = this.node();
+  table.rows().every(function () {
+    const d = this.data();
 
-    const rowDevice = row[3];
-    const rowIface  = (row[4] || "").toLowerCase();
-    const rowActionHTML = row[2];         // "<span class='audit-event audit-approve'>..."
-    const rowActionMatch = rowActionHTML.match(/audit\-([a-z_]+)/);
-    const rowAction = rowActionMatch ? rowActionMatch[1] : "";
+    const devMatch = !dev || d[3] === dev;
+    const ifMatch = !iface || (d[4] && d[4].includes(iface));
 
-    let visible = true;
+    const tr = this.node();     // ← FIXED
 
-    if (dev   && rowDevice !== dev) visible = false;
-    if (iface && !rowIface.includes(iface)) visible = false;
-    if (act   && rowAction !== act) visible = false;
+    if (!tr) return;
 
-    rowNode.style.display = visible ? "" : "none";
+    if (devMatch && ifMatch) {
+      tr.style.display = "";      // show
+    } else {
+      tr.style.display = "none";  // hide
+    }
   });
 }
 
 
 // ================== ROLLBACK HANDLERS ==================
-
-// async function loadRollbackDevices() {
-//   const sel = document.getElementById("rb-device");
-//   sel.innerHTML = `<option value="">Select a device…</option>`;
-
-//   const res = await fetch("/api/inventory");
-//   if (!res.ok) return;
-
-//   const devices = await res.json();
-
-//   devices.forEach(d => {
-//     const opt = document.createElement("option");
-//     opt.value = d.name;
-//     opt.textContent = d.name;
-//     sel.appendChild(opt);    // ✅ correcte target
-//   });
-
-//   sel.onchange = loadRollbackList;
-// }
-
-// async function loadRollbackList() {
-//   const dev = document.getElementById("rb-device").value;
-//   const list = document.getElementById("rb-list");
-
-//   const left  = document.getElementById("rb-left");
-//   const right = document.getElementById("rb-right");
-
-//   list.innerHTML = "";
-
-//   if (left)  left.textContent  = "Select a commit…";
-//   if (right) right.textContent = "";
-
-//   if (!dev) return;
-
-//   const res = await fetch(`/api/rollback/${dev}`, { headers: authHeaders() });
-//   const commits = await res.json();
-
-//   commits.forEach(item => {
-//     const li = document.createElement("li");
-//     li.textContent = `${item.index}: ${item.timestamp} — ${item.user}`;
-//     li.dataset.rb = item.index;
-
-//     li.onclick = () => loadRollbackDiff(dev, item.index, li);
-
-//     list.appendChild(li);
-//   });
-// }
-
-// async function loadRollbackDiff(device, index, li) { 
-//   document.querySelectorAll(".rb-list li").forEach(n => n.classList.remove("selected"));
-//   li.classList.add("selected");
-
-//   const left  = document.getElementById("rb-left");
-//   const right = document.getElementById("rb-right");
-
-//   if (!left || !right) {
-//     console.error("Side-by-side diff containers not found!");
-//     return;
-//   }
-
-//   left.textContent  = "Loading…";
-//   right.textContent = "Loading…";
-
-//   const res = await fetch(`/api/rollback/${device}/${index}/diff`, { headers: authHeaders() });
-
-//   if (!res.ok) {
-//     left.textContent  = "Failed to load diff";
-//     right.textContent = "";
-//     return;
-//   }
-
-//   const txt = await res.text();
-
-//   // ---- DETECT NO-OP DIFF ----
-//   const isRealDiff = txt.includes("+") || txt.includes("-");
-
-//   if (!isRealDiff) {
-//     left.textContent  = "(No differences)";
-//     right.textContent = "(No differences)";
-//     return;
-//   }
-
-//   const lines = txt.split("\n");
-
-//   let leftHtml  = [];
-//   let rightHtml = [];
-
-//   lines.forEach(line => {
-//     if (line.startsWith("+")) {
-//       leftHtml.push(`<div class="rb-eq"></div>`);
-//       rightHtml.push(`<div class="rb-add">${escapeHtml(line)}</div>`);
-
-//     } else if (line.startsWith("-")) {
-//       leftHtml.push(`<div class="rb-del">${escapeHtml(line)}</div>`);
-//       rightHtml.push(`<div class="rb-eq"></div>`);
-
-//     } else if (line.startsWith("@@")) {
-//       leftHtml.push(`<div class="rb-hunk">${escapeHtml(line)}</div>`);
-//       rightHtml.push(`<div class="rb-hunk">${escapeHtml(line)}</div>`);
-
-//     } else {
-//       leftHtml.push(`<div class="rb-eq">${escapeHtml(line)}</div>`);
-//       rightHtml.push(`<div class="rb-eq">${escapeHtml(line)}</div>`);
-//     }
-//   });
-
-//   left.innerHTML  = leftHtml.join("");
-//   right.innerHTML = rightHtml.join("");
-
-//   // Scroll sync
-//   left.parentElement.onscroll = () => {
-//     right.parentElement.scrollTop = left.parentElement.scrollTop;
-//   };
-//   right.parentElement.onscroll = () => {
-//     left.parentElement.scrollTop = right.parentElement.scrollTop;
-//   };
-// }
-
-// ===== rollback helpers (replace older functions) =====
 
 /** safe helper to escape HTML */
 function escapeHtml(s) {
@@ -1273,53 +1258,6 @@ function normalizeRollbackText(txt) {
   while (end > start && lines[end-1].trim() === "") end--;
 
   return lines.slice(start, end).join("\n");
-}
-
-/** Render side-by-side diff.
- *  Simple approach: iterate lines left-to-right and place removed lines in left,
- *  added lines in right. Neutral lines in both.
- *  Adds line numbers.
- */
-function renderRollbackDiff(txt) {
-  const leftEl = document.getElementById("rb-left");
-  const rightEl = document.getElementById("rb-right");
-  if (!leftEl || !rightEl) return;
-
-  leftEl.innerHTML = "";
-  rightEl.innerHTML = "";
-
-  const normalized = normalizeRollbackText(txt);
-  if (!normalized.trim()) {
-    leftEl.innerHTML = '<div class="rb-empty">No diff / empty output</div>';
-    rightEl.innerHTML = '<div class="rb-empty">No diff / empty output</div>';
-    return;
-  }
-
-  const lines = normalized.split("\n");
-
-  // iterate and create HTML (simple, robust)
-  lines.forEach((raw, idx) => {
-    const num = idx + 1;
-    const line = raw.replace(/\t/g, "  ");
-    const lineno = `<span class="rb-lineno">${num}</span>`;
-
-    if (line.startsWith("-")) {
-      const content = escapeHtml(line);
-      leftEl.innerHTML += `${lineno}<span class="line-minus">${content}</span>\n`;
-      rightEl.innerHTML += `${lineno}<span class="line-neutral"></span>\n`;
-    } else if (line.startsWith("+")) {
-      const content = escapeHtml(line);
-      rightEl.innerHTML += `${lineno}<span class="line-plus">${content}</span>\n`;
-      leftEl.innerHTML += `${lineno}<span class="line-neutral"></span>\n`;
-    } else {
-      const content = escapeHtml(line);
-      leftEl.innerHTML  += `${lineno}<span class="line-neutral">${content}</span>\n`;
-      rightEl.innerHTML += `${lineno}<span class="line-neutral">${content}</span>\n`;
-    }
-  });
-
-  // attach scroll-sync (one-shot)
-  attachRollbackScrollSync();
 }
 
 /** scroll sync (idempotent) */
@@ -1470,11 +1408,12 @@ async function applyRollback(device, idx) {
     alert(`Rollback ${idx} applied successfully.`);
   
     // 🔄 Refresh Audit log
-    loadAudit();
+    load_audit();
+    loadRollbackList();
   
     // 🔄 Refresh interfaces grid (if you're on switch tab)
     if (currentSwitch) {
-      loadInterfaces(currentSwitch);
+      await fetch(`/api/switches/${currentSwitch}/interfaces/retrieve`, { method: "POST" });
     }
   } catch (e) {
     console.error("applyRollback:", e);
@@ -1532,6 +1471,7 @@ function initAuditTable() {
       ordering: true,
       pageLength: 15,
       stripeClasses: [],
+      order: [[0, 'desc']],
       columnDefs: [
         {
           targets: 0,
@@ -1571,3 +1511,8 @@ function openAuditDetail(row) {
 document.getElementById("auditDetailClose").onclick = () => {
   document.getElementById("auditDetailModal").classList.add("hidden");
 };
+
+function clearModalDiff() {
+  const diffBox = document.getElementById("diffBox");
+  if (diffBox) diffBox.innerHTML = "No changes";
+}

@@ -4,7 +4,7 @@ import json
 import time
 import threading, re
 from ncclient import manager
-from ncclient.xml_ import to_ele, new_ele, sub_ele, to_xml
+from ncclient.xml_ import to_ele
 from lxml import etree
 from datetime import datetime
 from .models import InterfaceCache
@@ -49,7 +49,7 @@ def connect(dev):
     user = dev.get("username")
     pw = dev.get("password")
     return manager.connect(host=host, port=port, username=user, password=pw,
-                           hostkey_verify=False, allow_agent=False, look_for_keys=False, timeout=30)
+                           hostkey_verify=False, allow_agent=False, look_for_keys=False, timeout=60)
 
 def to_ele(response):
     try:
@@ -260,156 +260,6 @@ def get_operational(dev):
                 continue
             oper[name] = {'admin_up': (admin == 'up'), 'oper_up': (oper_s == 'up')}
         return oper
-
-# def get_interfaces_raw(dev):
-#     """
-#     Return merged config + oper with VC ports included.
-
-#     Rules:
-#     - VC ports use ONLY 'show virtual-chassis vc-port' for status
-#     - No get-interface-information for VC
-#     - VC ports are non-configurable
-#     """
-
-#     cfg_ele   = get_configuration(dev)
-#     cfg_ports = parse_interfaces_config(cfg_ele)  # configured only
-#     oper      = get_operational(dev)
-#     vc_ports  = get_vc_ports_raw(dev)
-
-#     print("VC PORTS RAW:", vc_ports)
-
-#     cfg_map = {p["name"]: p for p in cfg_ports}
-#     vc_map  = {p["name"]: p for p in vc_ports}
-
-#     # -------------------------------------------------
-#     # 1️⃣ FIRST: process configured interfaces
-#     # -------------------------------------------------
-#     for name, p in cfg_map.items():
-
-#         # -------- VC PORT OVERRIDE --------
-#         if name in vc_map:
-#             vc = vc_map[name]
-
-#             p["vc_port"]   = True
-#             p["vc_status"] = vc["vc_status"]
-
-#             # ✅ VC status is authoritative
-#             p["oper_up"]  = (vc["vc_status"] == "Up")
-#             p["admin_up"] = True
-
-#             # 🔐 VC ports are non-configurable
-#             p["bundle"]        = None
-#             p["mode"]          = None
-#             p["access_vlan"]   = None
-#             p["trunk_vlans"]   = None
-#             p["native_vlan"]   = None
-#             p["configured"]    = False
-
-#             continue  # 🚨 critical
-
-#         # -------- NORMAL PORT --------
-#         o = oper.get(name)
-#         if o:
-#             p["admin_up"] = o.get("admin_up")
-#             p["oper_up"]  = o.get("oper_up")
-
-#         p["vc_port"]   = False
-#         p["vc_status"] = None
-
-#     # -------------------------------------------------
-#     # 2️⃣ ADD VC-ONLY PORTS (not in config)
-#     # -------------------------------------------------
-#     for vp in vc_ports:
-#         name = vp["name"]
-#         if name in cfg_map:
-#             continue
-
-#         # parse xe-<member>/<pic>/<port>
-#         m = re.match(r'^(xe|ge)-(\d+)\/(\d+)\/(\d+)$', name)
-#         if m:
-#             scheme   = m.group(1)
-#             member_i = int(m.group(2))
-#             fpc_i    = int(m.group(3))
-#             port_i   = int(m.group(4))
-#         else:
-#             scheme   = "xe"
-#             member_i = 0
-#             fpc_i    = 0
-#             port_i   = 0
-
-#         vc_up = (vp.get("vc_status") == "Up")
-
-#         base = {
-#             "name": name,
-#             "member": member_i,
-#             "fpc": fpc_i,
-#             "type": scheme,
-#             "aggregate": False,
-#             "bundle": None,
-#             "port": port_i,
-#             "mode": None,
-#             "access_vlan": None,
-#             "trunk_vlans": None,
-#             "native_vlan": None,
-#             "poe": None,
-#             "speed": None,
-#             "duplex": None,
-#             "admin_up": True,
-#             "oper_up": vc_up,         # ✅ from VC
-#             "configured": False,
-#             "description": "VC Port",
-#             "lacp_mode": None,
-#             "vc_port": True,
-#             "vc_status": vp.get("vc_status"),
-#         }
-
-#         cfg_ports.append(base)
-#         cfg_map[name] = base
-
-#         # -------------------------------------------------
-#         # 3️⃣ ADD UNCONFIGURED BUT OPERATIONAL PORTS
-#         # -------------------------------------------------
-#         for ifname, o in oper.items():
-#             if ifname in cfg_map:
-#                 continue
-
-#             m = re.match(r'^(ge|xe)-(\d+)\/(\d+)\/(\d+)$', ifname)
-#             if m:
-#                 scheme   = m.group(1)
-#                 member_i = int(m.group(2))
-#                 fpc_i    = int(m.group(3))
-#                 port_i   = int(m.group(4))
-#             else:
-#                 continue
-
-#             base = {
-#                 "name": ifname,
-#                 "member": member_i,
-#                 "fpc": fpc_i,
-#                 "type": scheme,
-#                 "aggregate": False,
-#                 "bundle": None,
-#                 "port": port_i,
-#                 "mode": None,
-#                 "access_vlan": None,
-#                 "trunk_vlans": None,
-#                 "native_vlan": None,
-#                 "poe": None,
-#                 "speed": None,
-#                 "duplex": None,
-#                 "admin_up": o.get("admin_up"),
-#                 "oper_up": o.get("oper_up"),
-#                 "configured": False,
-#                 "description": None,
-#                 "lacp_mode": None,
-#                 "vc_port": False,
-#                 "vc_status": None,
-#             }
-
-#             cfg_ports.append(base)
-#             cfg_map[ifname] = base
-
-#     return cfg_ports
 
 def get_interfaces_raw(dev):
     """
@@ -773,6 +623,29 @@ def apply_interface_config(mgr, interface: str, config: dict):
             # best-effort (some boxes don't support candidate)
             pass
 
+        # Only delete existing interface block when the interface is already configured
+        if config.get("configured", True):
+            delete_xml = f"""
+            <config>
+            <configuration>
+                <interfaces>
+                <interface operation="delete">
+                    <name>{esc(interface)}</name>
+                </interface>
+                </interfaces>
+            </configuration>
+            </config>
+            """
+            try:
+                mgr.edit_config(target="candidate", config=delete_xml)
+            except Exception as e:
+                msg = str(e)
+                # Junos: "statement not found: ge-0/0/16"
+                if "statement not found" in msg:
+                    pass  # safe to ignore
+                else:
+                    raise
+
         # edit-config with full <config> wrapper; use 'merge' to merge with existing config
         mgr.edit_config(target="candidate", config=xml_payload, default_operation="merge")
 
@@ -816,7 +689,7 @@ def get_rollback_diff(dev, idx: int):
         try:
             rpc = etree.XML(f"""
                 <command format="text">
-                    show system rollback compare {idx} 0
+                    show system rollback compare 0 {idx}
                 </command>
             """)
 
@@ -857,21 +730,34 @@ def get_rollback_diff(dev, idx: int):
         except Exception as e:
             raise RuntimeError(f"Rollback diff failed: {e}")
 
-def apply_rollback(nc, idx: int):
-    # 1. Load rollback config
-    rpc_load = etree.XML(f"<load-configuration rollback=\"{idx}\" />")
-    nc.rpc(rpc_load)
 
-    # 2. Commit properly via NETCONF (NOT command RPC)
-    commit_rpc = etree.XML("""
-        <commit>
-            <synchronize/>
+def apply_rollback(mgr, idx: int):
+    """
+    Apply rollback <idx> using candidate+commit.
+    """
+    # lock candidate (best effort)
+    try:
+        mgr.lock("candidate")
+    except:
+        pass
+
+    try:
+        rpc_load = etree.XML(f"""
+        <load-configuration rollback="{idx}" format="text"/>
+        """)
+        mgr.rpc(rpc_load)
+
+        # Hard commit (Junos-style)
+        rpc_commit = etree.XML("""
         </commit>
-    """)
-    res = nc.rpc(commit_rpc)
+        """)
+        mgr.rpc(rpc_commit)
 
-    # 3. Return RPC output
-    return res.xpath("string()").strip()
+    finally:
+        try:
+            mgr.unlock("candidate")
+        except:
+            pass
 
 def parse_vc_ports_xml(res):
     ele = to_ele(res)
@@ -918,3 +804,41 @@ def parse_vc_ports_xml(res):
             })
 
     return ports
+
+def get_single_interface(nc, interface: str):
+    """
+    Retrieve ONLY the specified interface via NETCONF.
+    Much faster than dumping all interfaces.
+    """
+    rpc = etree.XML(f"""
+    <get-configuration>
+      <configuration>
+        <interfaces>
+          <interface>
+            <name>{interface}</name>
+          </interface>
+        </interfaces>
+      </configuration>
+    </get-configuration>
+    """)
+
+    res = nc.rpc(rpc)
+    xml_str = etree.tostring(res, pretty_print=True).decode()
+    return xml_str
+
+def delete_interface_config(mgr, interface: str):
+    xml = f"""
+    <config>
+      <configuration>
+        <interfaces>
+          <interface operation="delete">
+            <name>{sax.escape(interface)}</name>
+          </interface>
+        </interfaces>
+      </configuration>
+    </config>
+    """
+    mgr.lock("candidate")
+    mgr.edit_config(target="candidate", config=xml)
+    mgr.commit()
+    mgr.unlock("candidate")

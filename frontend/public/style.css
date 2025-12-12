@@ -534,12 +534,15 @@ body {
 }
 
 .modal-actions button {
+  flex: 1;
   padding: 8px 14px;
   border-radius: 6px;
   border: none;
   cursor: pointer;
+  transition: background .15s, opacity .15s;
 }
 
+/* Primary (Submit) */
 .modal-actions .primary {
   background: #238636;
   color: white;
@@ -548,6 +551,16 @@ body {
 .modal-actions .primary:hover {
   background: #15803d;
 }
+
+/* Danger (Delete) */
+.modal-actions .danger {
+  background: #d40000;
+  color: #fff;
+}
+.modal-actions .danger:hover {
+  background: #b80000;
+}
+
 .modal-section {
   margin-bottom: 16px;
   padding-bottom: 12px;
@@ -559,6 +572,13 @@ body {
   font-size: 14px;
   color: #444;
 }
+
+/* Disabled buttons */
+.modal-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 
 /* =====================================================
    FORM
@@ -1107,18 +1127,6 @@ button:hover {
   font-weight: 600;
 }
 
-/* .rb-diff-box {
-  background: #0d1117;
-  border: 1px solid #334155;
-  border-radius: 10px;
-  padding: 20px;
-  white-space: pre-wrap;
-  font-family: monospace;
-  color: #d1d5db;
-  overflow-y: auto;
-  max-height: 560px;
-} */
-
 .rb-diff-box {
   white-space: pre;
   font-family: Menlo, monospace;
@@ -1340,4 +1348,38 @@ button:hover {
 .rb-apply-btn:disabled {
   cursor:not-allowed;
   opacity:0.35;
+}
+
+#apply-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  backdrop-filter: blur(3px);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: white;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+#apply-overlay.hidden {
+  display: none !important;
+}
+
+/* Reuse your existing spinner style if present */
+#apply-overlay .spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

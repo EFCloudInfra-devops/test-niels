@@ -25,6 +25,11 @@
   </div>
 </header>
 
+<div id="apply-overlay" class="hidden">
+  <div class="spinner"></div>
+  <div class="apply-label">Applying configuration…</div>
+</div>
+
 <!-- ================= MAIN ================= -->
 <main>
 
@@ -141,14 +146,6 @@
           </select>
       
           <input id="audit-interface" class="audit-input" placeholder="Interface (ge-0/0/1)" />
-      
-          <select id="audit-action" class="audit-select">
-            <option value="">All events</option>
-            <option value="approve">Approve</option>
-            <option value="reject">Reject</option>
-            <option value="apply_success">Apply Success</option>
-            <option value="apply_failed">Apply Failed</option>
-          </select>
         </div>
       </div>      
 
@@ -274,7 +271,7 @@
           </div>
     
           <div class="modal-actions">
-            <button type="button" id="cancelModalBtn">Cancel</button>
+            <button type="button" id="deleteInterfaceBtn" class="danger">Delete interface config</button>
             <button type="submit" id="submitBtn" class="primary">Create request</button>
           </div>
         </form>

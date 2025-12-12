@@ -22,6 +22,15 @@ def refresh():
     finally:
         db.close()
 
+def refresh_interfaces_for_device(dev_name):
+    db = SessionLocal()
+    try:
+        interfaces = get_interfaces_raw(dev_name)
+        store_interfaces_cache(db, dev_name, interfaces)
+        return interfaces
+    finally:
+        db.close()
+
 def main():
     refresh()
 
