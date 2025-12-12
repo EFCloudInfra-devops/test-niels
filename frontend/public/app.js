@@ -617,7 +617,7 @@ async function loadApprovals() {
   list.innerHTML = "Loading…";
 
   const r = await fetch("/api/requests?status=pending", {
-    headers: { "X-Role": "approver" }
+    headers: { "X-Role": "approver", "X-User": "admin" }
   });
 
   if (!r.ok) {
@@ -640,58 +640,84 @@ async function loadApprovals() {
   items.forEach(req => {
     const card = document.createElement("div");
     card.className = "approval-card";
-  
+
     // ===== header =====
     const meta = document.createElement("div");
     meta.className = "approval-meta";
+
+    const tags = [];
+
+    tags.push(`<span class="tag pending">PENDING</span>`);
+    tags.push(`<span class="tag user">${req.requester}</span>`);
+    tags.push(`<span class="tag time">${new Date(req.created_at).toLocaleString()}</span>`);
+
+    // ⭐ DELETE badge
+    if (req.type === "delete") {
+      tags.push(`<span class="tag danger">DELETE</span>`);
+    }
+
     meta.innerHTML = `
       <div>
         <strong>${req.device}</strong>
         <span class="dim">${req.interface}</span>
       </div>
       <div class="approval-tags">
-        <span class="tag pending">PENDING</span>
-        <span class="tag user">${req.requester}</span>
-        <span class="tag time">
-          ${new Date(req.created_at).toLocaleString()}
-        </span>
+        ${tags.join("")}
       </div>
     `;
-  
-    // ===== diff =====
+
+    // ===== diff / delete-melding =====
     const diffBox = document.createElement("div");
     diffBox.className = "approval-diff";
-  
-    const diffs = diffObject(req.current_config, req.config);
-  
+
     const pre = document.createElement("pre");
-    pre.textContent = diffs.map(d =>
-      `${d.old !== undefined ? "- " : ""}${d.key}: ${d.old ?? "—"}\n` +
-      `${d.new !== undefined ? "+ " : ""}${d.key}: ${d.new ?? "—"}`
-    ).join("\n");
-  
+
+    if (req.type === "delete") {
+      // ⭐ Speciaal diff-blok voor deletes
+      pre.innerHTML = `
+<div class="diff-line diff-remove">- DELETE INTERFACE ${req.interface}</div>
+`.trim();
+    } else {
+      // normale diff
+      const before = req.current_config || {};
+      const after = req.config || {};
+
+      const diffs = diffObject(before, after);
+
+      if (diffs.length === 0) {
+        pre.innerHTML = `<div class="diff-line">No changes</div>`;
+      } else {
+        pre.textContent = diffs
+          .map(d =>
+            (d.old !== undefined ? `- ${d.key}: ${d.old}\n` : "") +
+            (d.new !== undefined ? `+ ${d.key}: ${d.new}` : "")
+          )
+          .join("\n\n");
+      }
+    }
+
     diffBox.appendChild(pre);
-  
+
     // ===== actions =====
     const actions = document.createElement("div");
     actions.className = "approval-actions";
-  
+
     const approveBtn = document.createElement("button");
     approveBtn.className = "btn approve";
     approveBtn.textContent = "✅ Approve";
     approveBtn.onclick = () => approveRequest(req.id);
-  
+
     const rejectBtn = document.createElement("button");
     rejectBtn.className = "btn reject";
     rejectBtn.textContent = "❌ Reject";
     rejectBtn.onclick = () => rejectRequest(req.id);
-  
+
     actions.append(approveBtn, rejectBtn);
-  
+
     // ===== assemble card =====
     card.append(meta, diffBox, actions);
     list.appendChild(card);
-  });  
+  });
 }
 
 async function approveRequest(id) {

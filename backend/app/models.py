@@ -23,6 +23,7 @@ class ChangeRequest(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     comment = Column(Text, nullable=True)
+    type = Column(String, default="config")   # "config" | "delete"
 
 class InterfaceCache(Base):
     __tablename__ = "interface_cache"
