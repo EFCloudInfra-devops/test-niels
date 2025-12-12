@@ -673,29 +673,29 @@ async function loadApprovals() {
     const pre = document.createElement("pre");
     
     if (req.type === "delete") {
-      // ⭐ Speciaal diff-blok voor deletes — OVERSCHRIJFT ALLES
+      // delete heeft GEEN normale diff
       pre.innerHTML = `
-    <div class="diff-line diff-remove">- Delete interface <strong>${req.interface}</strong></div>
-      `.trim();
+        <div class="diff-line diff-remove">- DELETE INTERFACE ${req.interface}</div>
+      `;
     } else {
-      // ⭐ gewone diff
+      // normale change
       const before = req.current_config || {};
       const after = req.config || {};
     
       const diffs = diffObject(before, after);
     
       if (diffs.length === 0) {
-        pre.innerHTML = `<div class="diff-line dim">No changes</div>`;
+        pre.innerHTML = `<div class="diff-line">No changes</div>`;
       } else {
-        pre.innerHTML = diffs
-          .map(d => `
-    <div class="diff-line diff-remove">${d.old !== undefined ? `- ${d.key}: ${d.old}` : ""}</div>
-    <div class="diff-line diff-add">${d.new !== undefined ? `+ ${d.key}: ${d.new}` : ""}</div>
-          `.trim())
-          .join("");
+        pre.textContent = diffs
+          .map(d =>
+            (d.old !== undefined ? `- ${d.key}: ${d.old}\n` : "") +
+            (d.new !== undefined ? `+ ${d.key}: ${d.new}` : "")
+          )
+          .join("\n\n");
       }
     }
-    
+        
     diffBox.appendChild(pre);
     
 
@@ -719,6 +719,19 @@ async function loadApprovals() {
     card.append(meta, diffBox, actions);
     list.appendChild(card);
   });
+}
+
+function getPendingDeletes() {
+  const cards = document.querySelectorAll(".approval-card");
+  const set = new Set();
+  cards.forEach(card => {
+    const t = card.querySelector(".approval-diff pre")?.textContent || "";
+    const header = card.querySelector(".approval-meta .dim")?.textContent;
+    if (t.includes("Delete interface") && header) {
+      set.add(header.trim());
+    }
+  });
+  return set;
 }
 
 async function approveRequest(id) {

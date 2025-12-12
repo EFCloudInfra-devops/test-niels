@@ -77,56 +77,6 @@ export function clearVlanHighlight() {
   document.querySelectorAll(".vlan-hover").forEach(el => el.classList.remove("vlan-hover"));
 }
 
-// ---------- port tile ----------
-// function createPortTile(port) {
-//   const el = document.createElement("div");
-//   el.className = "port";
-//   el.dataset.ifname = port.name;
-
-//   const label = document.createElement("div");
-//   label.className = "label-top";
-//   el.appendChild(label);
-
-//   const dot = document.createElement("div");
-//   dot.className = "dot";
-//   el.appendChild(dot);
-
-//   el.addEventListener("mouseenter", ev => {
-//     if (port.type === "ae") highlightBundle(port.name);
-//     if (port.bundle) {
-//       document
-//         .querySelectorAll(`[data-bundle="${port.bundle}"]`)
-//         .forEach(p => p.classList.add("lacp-highlight"));
-//     }
-
-//     showTooltip(`
-//       <strong>${port.name}</strong>
-//       <div>Status: ${
-//         port.oper_up === true ? "up" :
-//         port.oper_up === false ? "down" :
-//         "cached"
-//       }</div>
-//       <div>Mode: ${port.mode ?? "—"}</div>
-//       <div>Access VLAN: ${port.access_vlan ?? "—"}</div>
-//       <div>Bundle: ${port.bundle ?? "—"}</div>
-//       <div>Description: ${port.description ?? "—"}</div>
-//     `, ev);
-//   });
-
-//   el.addEventListener("mousemove", moveTooltip);
-//   el.addEventListener("mouseleave", () => {
-//     hideTooltip();
-//     clearBundle();
-//     document.querySelectorAll(".lacp-highlight")
-//       .forEach(p => p.classList.remove("lacp-highlight"));
-//   });
-
-//   el.addEventListener("click", () => {
-//     window.openModalForPort?.(port);
-//   });
-
-//   return el;
-// }
 function createPortTile(initialPort) {
   const el = document.createElement("div");
   el.className = "port";
@@ -227,8 +177,20 @@ function createPortTile(initialPort) {
 }
 
 function updatePortTile(el, port) {
-  el.className = "port"; // reset safe baseline
-  el.dataset.port = JSON.stringify(port);
+  el.classList.remove(
+    "cached",
+    "live",
+    "pending",
+    "approved",
+    "unconfigured",
+    "oper-up",
+    "oper-down",
+    "is-bundled",
+    "vc-port",
+    "member-0",
+    "member-1"
+  );
+  el.classList.add("port");  el.dataset.port = JSON.stringify(port);
   el.dataset.description = port.description ?? "";
 
   if (port._source === "cache") el.classList.add("cached");

@@ -22,9 +22,11 @@ class ChangeRequestOut(BaseModel):
     device: str
     interface: str
     requester: str
-    config: dict
-    status: RequestStatus
     approver: Optional[str]
+    config: dict
+    status: str
     created_at: datetime
     updated_at: datetime
     comment: Optional[str]
+    type: Optional[str] = None   #  ← toevoegen!
+
