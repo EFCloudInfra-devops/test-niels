@@ -526,19 +526,27 @@ document.getElementById("deleteInterfaceBtn").onclick = async function () {
   }
 };
 
-function closeModal() {
+function closeAllModals() {
+  // Config modal
   clearModalDiff();
   const modal = document.getElementById("modal");
   const portInfo = document.getElementById("portInfo");
-
-  modal.classList.add("hidden");
-
-  // 🔥 dit miste
+  if (modal) modal.classList.add("hidden");
   if (portInfo) portInfo.innerHTML = "";
-
-  // optional: reset form
   const form = document.getElementById("configForm");
   if (form) form.reset();
+
+  // Audit detail modal
+  const audit = document.getElementById("auditDetailModal");
+  const auditContent = document.getElementById("auditDetailContent");
+  if (audit) audit.classList.add("hidden");
+  if (auditContent) auditContent.innerHTML = "";
+}
+
+window.closeAllModals = closeAllModals;
+
+function closeModal() {
+  closeAllModals();
 }
 
 window.closeModal = closeModal;
@@ -546,20 +554,23 @@ window.closeModal = closeModal;
 document.addEventListener("click", (e) => {
   if (
     e.target.id === "closeModalBtn" ||
-    e.target.classList.contains("modal-close")
+    e.target.id === "auditDetailClose" ||
+    e.target.classList.contains("modal-close") ||
+    e.target.id === "modal" ||
+    e.target.id === "auditDetailModal"
   ) {
-    closeModal();
+    closeAllModals();
   }
 });
 
-document.getElementById("modal").addEventListener("click", (e) => {
-  if (e.target.id === "modal") {
-    closeModal();
-  }
-});
+// document.getElementById("modal").addEventListener("click", (e) => {
+//   if (e.target.id === "modal") {
+//     closeModal();
+//   }
+// });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeModal();
+  if (e.key === "Escape") closeAllModals();
 });
 
 // bootstrap

@@ -11,6 +11,12 @@ import json
 from datetime import datetime
 from .models import InterfaceCache, CachedVlan, AuditLog
 import xml.sax.saxutils as sax
+from pydantic import BaseModel
+
+class DeleteRequest(BaseModel):
+    device: str
+    interface: str
+    comment: str | None = None
 
 def write_audit(
     db: Session,
@@ -563,20 +569,18 @@ def refresh_single_interface(device: str, interface: str):
 
 @app.post("/api/requests/delete", status_code=200)
 def request_delete_interface(
-    device: str = Body(...),
-    interface: str = Body(...),
-    comment: Optional[str] = Body(None),
+    body: DeleteRequest,
     db: Session = Depends(get_db),
     user=Depends(require_role(("admin",)))
 ):
     req = models.ChangeRequest(
-        device=device,
-        interface=interface,
+        device=body.device,
+        interface=body.interface,
         type="delete",
         status=models.RequestStatus.pending,
         requester=user["username"],
         config={},  # geen config nodig
-        comment=comment
+        comment=body.comment
     )
     db.add(req)
     db.commit()
@@ -586,10 +590,10 @@ def request_delete_interface(
         db,
         actor=user["username"],
         action="request_delete",
-        device=device,
-        interface=interface,
+        device=body.device,
+        interface=body.interface,
         request_id=req.id,
-        comment=comment,
+        comment=body.comment,
         payload={"delete": True}
     )
 
