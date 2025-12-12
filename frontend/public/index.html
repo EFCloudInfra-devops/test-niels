@@ -194,10 +194,15 @@
 
         <!-- RIGHT: diff -->
         <div class="rollback-diff">
-          <h3>Diff</h3>
-          <pre id="rb-diff" class="rb-diff-box">Select a commit…</pre>
+          <h3 class="rb-diff-title">
+            Diff
+            <button id="rb-apply" class="rb-apply-btn" disabled>Apply rollback</button>
+          </h3>
+          <div id="rb-diff" class="rb-diff-sbs">
+            <div class="rb-col rb-left"><div class="rb-content" id="rb-left"></div></div>
+            <div class="rb-col rb-right"><div class="rb-content" id="rb-right"></div></div>
+          </div>
         </div>
-
       </div>
     </div>
 
@@ -221,7 +226,7 @@
 
     </div>
   </div>
-  
+
 </main>
 
 

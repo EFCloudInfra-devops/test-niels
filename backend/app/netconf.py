@@ -4,7 +4,7 @@ import json
 import time
 import threading, re
 from ncclient import manager
-from ncclient.xml_ import to_ele
+from ncclient.xml_ import to_ele, new_ele, sub_ele, to_xml
 from lxml import etree
 from datetime import datetime
 from .models import InterfaceCache
@@ -703,58 +703,6 @@ def commit_changes(dev, interfaces, config):
             _cache_interfaces.clear()
             _cache_live.clear()
 
-# def apply_interface_config(mgr, interface: str, config: dict):
-#     """
-#     Stable Juniper commit:
-#     - No candidate lock (EX switches sometimes choke)
-#     - Clean <config> wrapper
-#     - Hard commit only
-#     - No confirm
-#     - Longer RPC timeout
-#     """
-
-#     if config.get("vc_port"):
-#         raise ValueError("VC port configuration is not allowed")
-
-#     # Build “set” CLI commands
-#     cmds = []
-
-#     # Description if present
-#     if "description" in config and config["description"]:
-#         cmds.append(f"set interfaces {interface} description \"{config['description']}\"")
-
-#     # Access mode
-#     if config["mode"] == "access":
-#         cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching interface-mode access")
-#         if config.get("access_vlan"):
-#             cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching vlan members {config['access_vlan']}")
-
-#     # Trunk mode
-#     elif config["mode"] == "trunk":
-#         cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching interface-mode trunk")
-#         for v in config.get("trunk_vlans", []):
-#             cmds.append(f"set interfaces {interface} unit 0 family ethernet-switching vlan members {v}")
-#         if config.get("native_vlan"):
-#             cmds.append(f"set interfaces {interface} native-vlan-id {config['native_vlan']}")
-
-#     if not cmds:
-#         raise ValueError("No configuration commands generated")
-
-#     # Convert set commands into a proper XML <config>
-#     # Junos accepts `<configuration><apply-groups>` style inside <config>
-#     xml_payload = "<config><configuration>\n"
-#     for c in cmds:
-#         xml_payload += f"  {c}\n"
-#     xml_payload += "</configuration></config>"
-
-#     # Execute commit
-#     try:
-#         mgr.timeout = 120  # Increase timeout
-#         mgr.edit_config(target="candidate", config=xml_payload)
-#         mgr.commit()
-#     except Exception as e:
-#         raise RuntimeError(f"NETCONF apply failed: {e}")
-
 def apply_interface_config(mgr, interface: str, config: dict):
     """
     Apply configuration by sending a proper <config><configuration>... XML snippet.
@@ -871,31 +819,59 @@ def get_rollback_diff(dev, idx: int):
                     show system rollback compare {idx} 0
                 </command>
             """)
+
             res = m.rpc(rpc)
-            return res.text
+
+            #
+            # --- Normalize RPCReply into an XML element ---
+            #
+            if hasattr(res, "data") and res.data is not None:
+                # Preferred
+                root = res.data
+            elif hasattr(res, "element") and res.element is not None:
+                root = res.element
+            elif hasattr(res, "xml"):
+                # Parse XML string
+                root = etree.fromstring(res.xml.encode())
+            elif isinstance(res, etree._Element):
+                # Already an XML element
+                root = res
+            else:
+                raise RuntimeError("Unable to parse NETCONF RPCReply into XML")
+
+            #
+            # --- Extract <output> text from Junos command RPC ---
+            #
+            output = root.find(".//output")
+            if output is not None and output.text:
+                txt = output.text.strip()
+            else:
+                txt = root.xpath("string()").strip()
+
+            # 3. Remove stupid extra quotes added by Junos RPC wrapper
+            if (txt.startswith('"') and txt.endswith('"')):
+                txt = txt[1:-1]
+
+            return txt
+        
         except Exception as e:
             raise RuntimeError(f"Rollback diff failed: {e}")
 
+def apply_rollback(nc, idx: int):
+    # 1. Load rollback config
+    rpc_load = etree.XML(f"<load-configuration rollback=\"{idx}\" />")
+    nc.rpc(rpc_load)
 
-def apply_rollback(mgr, idx: int):
-    """
-    Apply rollback <idx> using candidate+commit.
-    """
-    # lock candidate (best effort)
-    try:
-        mgr.lock("candidate")
-    except:
-        pass
+    # 2. Commit properly via NETCONF (NOT command RPC)
+    commit_rpc = etree.XML("""
+        <commit>
+            <synchronize/>
+        </commit>
+    """)
+    res = nc.rpc(commit_rpc)
 
-    try:
-        rpc = etree.XML(f"<command>rollback {idx}</command>")
-        mgr.rpc(rpc)
-        mgr.commit()
-    finally:
-        try:
-            mgr.unlock("candidate")
-        except:
-            pass
+    # 3. Return RPC output
+    return res.xpath("string()").strip()
 
 def parse_vc_ports_xml(res):
     ele = to_ele(res)

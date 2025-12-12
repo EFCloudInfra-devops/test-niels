@@ -22,11 +22,11 @@ services:
       - backend
     restart: unless-stopped
       
-  # nightly-refresh:
-  #   container_name: nightly-refresh
-  #   image: manager-backend
-  #   command: python -m app.jobs.nightly_refresh
-  #   volumes:
-  #     - ./backend/data:/app/backend/data
-  #   restart: "no"
+  nightly-refresh:
+    container_name: nightly-refresh
+    image: manager-backend
+    command: python -m app.jobs.nightly_refresh
+    volumes:
+      - ./backend/data:/app/backend/data
+    restart: "no"
 

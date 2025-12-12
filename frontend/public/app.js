@@ -512,6 +512,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   document.getElementById("tab-rollback").onclick = () => {
     showView("rollback");
+    initRollbackTab();
   };
 
   // ✅ audit filter hooks (bestaan alleen in approvals view)
@@ -1115,8 +1116,237 @@ function applyAuditFilters() {
 
 // ================== ROLLBACK HANDLERS ==================
 
+// async function loadRollbackDevices() {
+//   const sel = document.getElementById("rb-device");
+//   sel.innerHTML = `<option value="">Select a device…</option>`;
+
+//   const res = await fetch("/api/inventory");
+//   if (!res.ok) return;
+
+//   const devices = await res.json();
+
+//   devices.forEach(d => {
+//     const opt = document.createElement("option");
+//     opt.value = d.name;
+//     opt.textContent = d.name;
+//     sel.appendChild(opt);    // ✅ correcte target
+//   });
+
+//   sel.onchange = loadRollbackList;
+// }
+
+// async function loadRollbackList() {
+//   const dev = document.getElementById("rb-device").value;
+//   const list = document.getElementById("rb-list");
+
+//   const left  = document.getElementById("rb-left");
+//   const right = document.getElementById("rb-right");
+
+//   list.innerHTML = "";
+
+//   if (left)  left.textContent  = "Select a commit…";
+//   if (right) right.textContent = "";
+
+//   if (!dev) return;
+
+//   const res = await fetch(`/api/rollback/${dev}`, { headers: authHeaders() });
+//   const commits = await res.json();
+
+//   commits.forEach(item => {
+//     const li = document.createElement("li");
+//     li.textContent = `${item.index}: ${item.timestamp} — ${item.user}`;
+//     li.dataset.rb = item.index;
+
+//     li.onclick = () => loadRollbackDiff(dev, item.index, li);
+
+//     list.appendChild(li);
+//   });
+// }
+
+// async function loadRollbackDiff(device, index, li) { 
+//   document.querySelectorAll(".rb-list li").forEach(n => n.classList.remove("selected"));
+//   li.classList.add("selected");
+
+//   const left  = document.getElementById("rb-left");
+//   const right = document.getElementById("rb-right");
+
+//   if (!left || !right) {
+//     console.error("Side-by-side diff containers not found!");
+//     return;
+//   }
+
+//   left.textContent  = "Loading…";
+//   right.textContent = "Loading…";
+
+//   const res = await fetch(`/api/rollback/${device}/${index}/diff`, { headers: authHeaders() });
+
+//   if (!res.ok) {
+//     left.textContent  = "Failed to load diff";
+//     right.textContent = "";
+//     return;
+//   }
+
+//   const txt = await res.text();
+
+//   // ---- DETECT NO-OP DIFF ----
+//   const isRealDiff = txt.includes("+") || txt.includes("-");
+
+//   if (!isRealDiff) {
+//     left.textContent  = "(No differences)";
+//     right.textContent = "(No differences)";
+//     return;
+//   }
+
+//   const lines = txt.split("\n");
+
+//   let leftHtml  = [];
+//   let rightHtml = [];
+
+//   lines.forEach(line => {
+//     if (line.startsWith("+")) {
+//       leftHtml.push(`<div class="rb-eq"></div>`);
+//       rightHtml.push(`<div class="rb-add">${escapeHtml(line)}</div>`);
+
+//     } else if (line.startsWith("-")) {
+//       leftHtml.push(`<div class="rb-del">${escapeHtml(line)}</div>`);
+//       rightHtml.push(`<div class="rb-eq"></div>`);
+
+//     } else if (line.startsWith("@@")) {
+//       leftHtml.push(`<div class="rb-hunk">${escapeHtml(line)}</div>`);
+//       rightHtml.push(`<div class="rb-hunk">${escapeHtml(line)}</div>`);
+
+//     } else {
+//       leftHtml.push(`<div class="rb-eq">${escapeHtml(line)}</div>`);
+//       rightHtml.push(`<div class="rb-eq">${escapeHtml(line)}</div>`);
+//     }
+//   });
+
+//   left.innerHTML  = leftHtml.join("");
+//   right.innerHTML = rightHtml.join("");
+
+//   // Scroll sync
+//   left.parentElement.onscroll = () => {
+//     right.parentElement.scrollTop = left.parentElement.scrollTop;
+//   };
+//   right.parentElement.onscroll = () => {
+//     left.parentElement.scrollTop = right.parentElement.scrollTop;
+//   };
+// }
+
+// ===== rollback helpers (replace older functions) =====
+
+/** safe helper to escape HTML */
+function escapeHtml(s) {
+  if (s === null || s === undefined) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/** Normalize raw diff text from Junos RPC:
+ *  - strip surrounding quotes if present
+ *  - remove leading/trailing [edit ...] wrapper lines
+ *  - normalize CRLF -> LF
+ */
+function normalizeRollbackText(txt) {
+  if (!txt) return "";
+
+  // Some RPC returns a quoted string (leading/trailing "...")
+  txt = txt.trim();
+  if ((txt.startsWith('"') && txt.endsWith('"')) || (txt.startsWith("'") && txt.endsWith("'"))) {
+    // remove only one outer pair
+    txt = txt.slice(1, -1);
+  }
+
+  // normalize line endings
+  txt = txt.replace(/\r\n/g, "\n");
+
+  // remove [edit ...] and enclosing lines like "[edit interfaces]" or header lines
+  // and blank first/last lines
+  const lines = txt.split("\n");
+
+  // remove common leading wrapper lines like '[edit interfaces]' or '---'
+  let start = 0, end = lines.length;
+  while (start < end && lines[start].trim() === "") start++;
+  if (start < end && /^\[edit\b/.test(lines[start])) start++;
+  while (end > start && lines[end-1].trim() === "") end--;
+
+  return lines.slice(start, end).join("\n");
+}
+
+/** Render side-by-side diff.
+ *  Simple approach: iterate lines left-to-right and place removed lines in left,
+ *  added lines in right. Neutral lines in both.
+ *  Adds line numbers.
+ */
+function renderRollbackDiff(txt) {
+  const leftEl = document.getElementById("rb-left");
+  const rightEl = document.getElementById("rb-right");
+  if (!leftEl || !rightEl) return;
+
+  leftEl.innerHTML = "";
+  rightEl.innerHTML = "";
+
+  const normalized = normalizeRollbackText(txt);
+  if (!normalized.trim()) {
+    leftEl.innerHTML = '<div class="rb-empty">No diff / empty output</div>';
+    rightEl.innerHTML = '<div class="rb-empty">No diff / empty output</div>';
+    return;
+  }
+
+  const lines = normalized.split("\n");
+
+  // iterate and create HTML (simple, robust)
+  lines.forEach((raw, idx) => {
+    const num = idx + 1;
+    const line = raw.replace(/\t/g, "  ");
+    const lineno = `<span class="rb-lineno">${num}</span>`;
+
+    if (line.startsWith("-")) {
+      const content = escapeHtml(line);
+      leftEl.innerHTML += `${lineno}<span class="line-minus">${content}</span>\n`;
+      rightEl.innerHTML += `${lineno}<span class="line-neutral"></span>\n`;
+    } else if (line.startsWith("+")) {
+      const content = escapeHtml(line);
+      rightEl.innerHTML += `${lineno}<span class="line-plus">${content}</span>\n`;
+      leftEl.innerHTML += `${lineno}<span class="line-neutral"></span>\n`;
+    } else {
+      const content = escapeHtml(line);
+      leftEl.innerHTML  += `${lineno}<span class="line-neutral">${content}</span>\n`;
+      rightEl.innerHTML += `${lineno}<span class="line-neutral">${content}</span>\n`;
+    }
+  });
+
+  // attach scroll-sync (one-shot)
+  attachRollbackScrollSync();
+}
+
+/** scroll sync (idempotent) */
+function attachRollbackScrollSync() {
+  const left = document.querySelector(".rb-left");
+  const right = document.querySelector(".rb-right");
+  if (!left || !right) return;
+
+  // avoid binding multiple times: use a flag on element
+  if (!left._syncBound) {
+    left.addEventListener("scroll", () => {
+      right.scrollTop = left.scrollTop;
+    });
+    left._syncBound = true;
+  }
+  if (!right._syncBound) {
+    right.addEventListener("scroll", () => {
+      left.scrollTop = right.scrollTop;
+    });
+    right._syncBound = true;
+  }
+}
+
+/** Load devices into rb-device select */
 async function loadRollbackDevices() {
   const sel = document.getElementById("rb-device");
+
   sel.innerHTML = `<option value="">Select a device…</option>`;
 
   const res = await fetch("/api/inventory");
@@ -1124,23 +1354,40 @@ async function loadRollbackDevices() {
 
   const devices = await res.json();
 
+  // voorkom dubbele opties
+  const added = new Set();
+
   devices.forEach(d => {
-    const opt = document.createElement("option");
-    opt.value = d.name;
-    opt.textContent = d.name;
-    sel.appendChild(opt);    // ✅ correcte target
+    if (!added.has(d.name)) {
+      const opt = document.createElement("option");
+      opt.value = d.name;
+      opt.textContent = d.name;
+      sel.appendChild(opt);
+      added.add(d.name);
+    }
   });
 
+  // correcte binding
   sel.onchange = loadRollbackList;
 }
 
+
+/** Load commit list for selected device */
 async function loadRollbackList() {
   const dev = document.getElementById("rb-device").value;
   const list = document.getElementById("rb-list");
-  const diff = document.getElementById("rb-diff");
+  const left = document.getElementById("rb-left");
+  const right = document.getElementById("rb-right");
+  const applyBtn = document.getElementById("rb-apply");
+
+  if (!list || !left || !right || !applyBtn) return;
 
   list.innerHTML = "";
-  diff.textContent = "Select a commit…";
+  left.textContent = "Select a commit…";
+  right.textContent = "";
+
+  applyBtn.disabled = true;
+  applyBtn.onclick = null;
 
   if (!dev) return;
 
@@ -1151,31 +1398,128 @@ async function loadRollbackList() {
     const li = document.createElement("li");
     li.textContent = `${item.index}: ${item.timestamp} — ${item.user}`;
     li.dataset.rb = item.index;
-
     li.onclick = () => loadRollbackDiff(dev, item.index, li);
-
     list.appendChild(li);
   });
 }
 
+/** Load and render diff for a selected commit index */
 async function loadRollbackDiff(device, index, li) {
   document.querySelectorAll(".rb-list li").forEach(n => n.classList.remove("selected"));
   li.classList.add("selected");
 
-  const diffBox = document.getElementById("rb-diff");
-  diffBox.textContent = "Loading…";
+  const applyBtn = document.getElementById("rb-apply");
+  const leftBox = document.getElementById("rb-left");
+  const rightBox = document.getElementById("rb-right");
 
-  const res = await fetch(`/api/rollback/${device}/${index}/diff`,
-    { headers: authHeaders() }
-  );
+  // Enable apply button
+  applyBtn.disabled = false;
+  applyBtn.onclick = () => applyRollback(device, index);
+
+  leftBox.textContent = "Loading…";
+  rightBox.textContent = "Loading…";
+
+  const res = await fetch(`/api/rollback/${device}/${index}/diff`, {
+    headers: authHeaders()
+  });
 
   if (!res.ok) {
-    diffBox.textContent = "Failed to load diff.";
+    leftBox.textContent = "Failed to load diff.";
+    rightBox.textContent = "";
     return;
   }
 
   const txt = await res.text();
-  diffBox.textContent = txt || "(empty diff)";
+
+  if (!txt.trim()) {
+    leftBox.textContent = "(no diff)";
+    rightBox.textContent = "";
+    return;
+  }
+
+  // Parse diff in twee kolommen
+  const parsed = parseDiff(txt);
+
+  leftBox.textContent = parsed.left.join("\n");
+  rightBox.textContent = parsed.right.join("\n");
+}
+
+
+async function applyRollback(device, idx) {
+  if (!confirm(`Are you sure you want to apply rollback ${idx} on ${device}?`)) {
+    return;
+  }
+
+  try {
+    const res = await fetch(
+      `/api/rollback/${device}/${idx}/apply`,
+      {
+        method: "POST",
+        headers: authHeaders()
+      }
+    );
+
+    const txt = await res.json();
+
+    if (!res.ok) {
+      alert("Rollback failed: " + txt.detail);
+      return;
+    }
+  
+    // --- SUCCESS ---
+    alert(`Rollback ${idx} applied successfully.`);
+  
+    // 🔄 Refresh Audit log
+    loadAudit();
+  
+    // 🔄 Refresh interfaces grid (if you're on switch tab)
+    if (currentSwitch) {
+      loadInterfaces(currentSwitch);
+    }
+  } catch (e) {
+    console.error("applyRollback:", e);
+    alert("Network error while applying rollback.");
+  }
+}
+
+function parseDiff(txt) {
+  const left = [];
+  const right = [];
+
+  const lines = txt.split("\n");
+
+  lines.forEach((line, i) => {
+
+    // 1️⃣ Eerste regel = context → in beide kolommen
+    if (i === 0 && !line.startsWith("+") && !line.startsWith("-")) {
+      left.push("  " + line);
+      right.push("  " + line);
+      return;
+    }
+
+    // 2️⃣ Diff regels
+    if (line.startsWith("-")) {
+      left.push(line);
+      right.push("");
+    }
+    else if (line.startsWith("+")) {
+      left.push("");
+      right.push(line);
+    }
+    else {
+      // 3️⃣ unchanged
+      left.push("  " + line);
+      right.push("  " + line);
+    }
+  });
+
+  return { left, right };
+}
+
+// init hookup (call once on DOMContentLoaded)
+function initRollbackTab() {
+  // ensure left/right exist -> attach sync
+  attachRollbackScrollSync();
 }
 
 function initAuditTable() {
@@ -1207,15 +1551,6 @@ function initAuditTable() {
     });
   }
 }
-
-// function openAuditDetail(row) {
-//   const modal = document.getElementById("auditDetailModal");
-//   const box = document.getElementById("auditDetailBox");
-
-//   box.textContent = JSON.stringify(row, null, 2);
-  
-//   modal.classList.remove("hidden");
-// }
 
 function openAuditDetail(row) {
   const modal = document.getElementById("auditDetailModal");

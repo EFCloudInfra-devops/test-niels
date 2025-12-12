@@ -1,6 +1,6 @@
 # main.py
 from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from typing import Optional, List
 from .devices import load_devices, get_device
 from . import netconf, models, schemas
@@ -460,9 +460,12 @@ def rollback_diff(device: str, idx: int):
     try:
         dev = get_device(device)
         diff = netconf.get_rollback_diff(dev, idx)
-        return diff
+        
+        # 🔥 belangrijk: altijd raw plaintext teruggeven
+        return PlainTextResponse(diff if diff else "")
     except Exception as e:
         raise HTTPException(500, f"NETCONF failed: {e}")
+
 
 @app.post("/api/rollback/{device}/{idx}/apply")
 def rollback_apply(
