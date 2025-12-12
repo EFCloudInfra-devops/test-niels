@@ -749,7 +749,7 @@ def apply_rollback(mgr, idx: int):
 
         # Hard commit (Junos-style)
         rpc_commit = etree.XML("""
-        </commit>
+        <commit/>
         """)
         mgr.rpc(rpc_commit)
 

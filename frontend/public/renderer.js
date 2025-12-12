@@ -226,7 +226,6 @@ function createPortTile(initialPort) {
   return el;
 }
 
-
 function updatePortTile(el, port) {
   el.className = "port"; // reset safe baseline
   el.dataset.port = JSON.stringify(port);
@@ -275,7 +274,28 @@ function updatePortTile(el, port) {
   if (Array.isArray(port.trunk_vlans)) vlans.push(...port.trunk_vlans);
   if (vlans.length) el.dataset.vlan = vlans.join(" ");
   else delete el.dataset.vlan;
+  
+  // ---------------------------------------------
+  // PENDING BADGES (change + delete) + pulsate
+  // ---------------------------------------------
 
+  // verwijder oude badges
+  el.querySelectorAll(".pending-badge").forEach(b => b.remove());
+
+  if (port.pending) {
+    const badge = document.createElement("div");
+    badge.classList.add("pending-badge", "pulsate");
+
+    if (port.pending_type === "delete") {
+      badge.textContent = "DEL";
+      badge.classList.add("pending-delete");
+    } else {
+      badge.textContent = "PEND";
+      badge.classList.add("pending-change");
+    }
+
+    el.appendChild(badge);
+  }
 }
 
 // ---------- main renderer ----------

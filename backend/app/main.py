@@ -1,5 +1,5 @@
 # main.py
-from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi import FastAPI, HTTPException, Depends, Header, Query, Body
 from fastapi.responses import JSONResponse, PlainTextResponse
 from typing import Optional, List
 from .devices import load_devices, get_device

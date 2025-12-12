@@ -484,45 +484,45 @@ document.getElementById("deleteInterfaceBtn").onclick = async function () {
   const ifname = CURRENT_PORT.name;
   const device = CURRENT_DEVICE;
 
-  if (!confirm(`Delete interface ${ifname} on ${device}? This will create an approval request.`))
-    return;
+  if (!confirm(`Request delete of interface ${ifname} on ${device}?`)) return;
 
   showApplySpinner();
 
   try {
-    const r = await fetch(`/api/requests/delete`, {
+    const payload = {
+      device,
+      interface: ifname,
+      comment: "Requested via UI"
+    };
+
+    const r = await fetch("/api/requests/delete", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-User": "admin",
-        "X-Role": "admin"   // delete is admin-only
+        "X-Role": "admin"
       },
-      body: JSON.stringify({
-        device,
-        interface: ifname,
-        comment: "User requested delete"
-      })
+      body: JSON.stringify(payload)
     });
 
-    const payload = await r.json().catch(() => null);
+    const json = await r.json().catch(() => null);
+
+    hideApplySpinner();
 
     if (!r.ok) {
-      hideApplySpinner();
-      alert("Create delete request failed:\n" + (payload?.detail || "Unknown error"));
+      alert("Delete request failed:\n" + (json?.detail || "Unknown"));
       return;
     }
 
-    hideApplySpinner();
     closeModal();
     clearModalDiff();
-
-    // refresh UI lists
     loadApprovals();
     load_audit();
+    alert("Delete request created (pending approval).");
 
   } catch (e) {
     hideApplySpinner();
-    alert("Delete request error: " + e);
+    alert("Delete error: " + e);
   }
 };
 
@@ -747,6 +747,12 @@ async function approveRequest(id) {
   await loadApprovals();
   load_audit();
 
+  // Track last approved change (also for delete)
+  window.LAST_CHANGED = {
+    device: approvedReq.device,
+    interface: approvedReq.interface
+  };
+
   // 🔥 FINALLY
   clearModalDiff();
   hideApplySpinner();
@@ -900,13 +906,20 @@ function mergeAndRedrawPorts(device, dataOrArray) {
   // -------- overlay real data --------
   incoming.forEach(p => {
     const base = map[p.name] || {};
+    const pend = pendingByInterface[`${device}|${p.name}`] || null;
+  
     map[p.name] = {
       ...base,
       ...p,
       _source: p._source || "live",
-      pending: !!pendingByInterface[`${device}|${p.name}`]
+  
+      pending: !!pend,
+      pending_type: pend?.type || null,   // "delete" of null
+  
+      pending_request: pend || null       // optioneel, voor toekomstige UI
     };
   });
+  
 
   // -------- final render list --------
   const renderPorts = Object.values(map)
@@ -1057,30 +1070,40 @@ async function loadVlanCacheStatus(device) {
 
 document.getElementById("btn-refresh-interfaces").onclick = async () => {
   if (!currentSwitch) return;
+
   const overlay = document.getElementById("grid-overlay");
   overlay.classList.remove("hidden");
+
   try {
-    if (approvedReq?.device && approvedReq?.interface) {
+    // ---- fast refresh if we know what changed ----
+    if (window.LAST_CHANGED &&
+        window.LAST_CHANGED.device === currentSwitch) {
+
+      const ifname = window.LAST_CHANGED.interface;
+
       try {
-        const single = await fetch(
-          `/api/interface/${approvedReq.device}/${approvedReq.interface}/refresh`,
+        const rFast = await fetch(
+          `/api/interface/${currentSwitch}/${ifname}/refresh`,
           { method: "POST" }
         );
-    
-        if (single.ok) {
-          const j = await single.json();
+
+        if (rFast.ok) {
+          const j = await rFast.json();
           if (j?.data) {
-            mergeAndRedrawPorts(approvedReq.device, [j.data]);
+            console.log("Fast refresh hit:", ifname);
+            mergeAndRedrawPorts(currentSwitch, [j.data]);
           }
         }
       } catch (e) {
-        console.error("Fast single-interface refresh failed", e);
+        console.warn("Fast refresh error:", e);
       }
-    }    
-    if (!r.ok) throw new Error("retrieve failed");
+    }
+
+    // ---- then load cached full list (almost instant) ----
+    const r = await fetch(`/api/switches/${currentSwitch}/interfaces`);
     const data = await r.json();
-    // endpoint returns { interfaces: [...] } — pass the full payload as 'live' override
     mergeAndRedrawPorts(currentSwitch, data.interfaces || data);
+
   } catch (e) {
     console.error(e);
     alert("Config ophalen mislukt");
